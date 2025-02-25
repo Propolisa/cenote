@@ -1,11 +1,19 @@
 <template>
   <div>
-    <canvas width="1920" height="880" ref="canvas"></canvas>
+    <canvas
+      v-if="wgsl_renderer"
+      width="1920"
+      height="880"
+      ref="wgsl_canvas"
+    ></canvas>
+
+    <canvas v-else width="1920" height="880" ref="babylon_canvas"></canvas>
     <DatGui
       closeText="Close controls"
       openText="Open controls"
       closePosition="bottom"
     >
+      <DatBoolean v-model="wgsl_renderer" label="Renderer"></DatBoolean>
       <DatNumber v-model="X_RES" :min="0" :max="1920"></DatNumber>
       <DatNumber v-model="Y_RES" :min="0" :max="1080"></DatNumber>
       <DatFolder label="Performance">
@@ -26,10 +34,6 @@
           :min="fragment_shader_constants[key].range?.start"
           :max="fragment_shader_constants[key].range?.end"
       /></DatFolder>
-      <DatFolder label="Application">
-        <DatSelect v-model="pictureUrl" :items="pictures" label="Picture" />
-        <DatBoolean v-model="SINGLE_MODE" label="Only update on change" />
-      </DatFolder>
     </DatGui>
   </div>
 </template>
@@ -38,12 +42,15 @@
 import { onMounted, onUnmounted, ref, reactive } from "vue";
 import { makeShaderDataDefinitions, makeStructuredView } from "webgpu-utils";
 import shader from "../modules/raymarch_noise.wgsl?raw";
+import images_json from "../modules/images.json?raw";
 import { DatNumber } from "@cyrilf/vue-dat-gui";
+import { CenoteGame } from "../modules/babylon_main";
 let wgsl_constant_decl_regex =
   /const\s+(?<constantName>\w+)(:\s*(?<constantType>\w+))?\s*=\s*(?<initialValue>[^;]+);(?:\s*\/\/\s*\{(?<humanReadableName>[^:]+):(?<rangeOrValues>[^\}]+)\})?/;
 export default {
   data() {
     return {
+      wgsl_renderer: true,
       performance_metrics: {},
       SINGLE_MODE: true,
       MAX_FRAMES: 1,
@@ -78,28 +85,14 @@ export default {
         spreadRadius: 2,
         color: "rgba(3, 23, 6, 1)",
       },
-      pictureUrl:
-        "https://images.unsplash.com/photo-1516214104703-d870798883c5?ixlib=rb-1.2.1&ixid=eyJhcHBfaWQiOjEyMDd9&auto=format&fit=crop&w=750&q=80",
-      pictures: [
-        {
-          name: "forest",
-          value:
-            "https://images.unsplash.com/photo-1516214104703-d870798883c5?ixlib=rb-1.2.1&ixid=eyJhcHBfaWQiOjEyMDd9&auto=format&fit=crop&w=750&q=80",
-        },
-        {
-          name: "mountain",
-          value:
-            "https://images.unsplash.com/photo-1526080676457-4544bf0ebba9?ixlib=rb-1.2.1&ixid=eyJhcHBfaWQiOjEyMDd9&auto=format&fit=crop&w=750&q=80",
-        },
-        {
-          name: "beach",
-          value:
-            "https://images.unsplash.com/photo-1520942702018-0862200e6873?ixlib=rb-1.2.1&ixid=eyJhcHBfaWQiOjEyMDd9&auto=format&fit=crop&w=750&q=80",
-        },
-      ],
     };
   },
   watch: {
+    wgsl_renderer() {
+      this.removeEventListeners();
+      this.device?.destroy();
+      this.enterMainDrawLoop();
+    },
     fragment_shader_constants: {
       handler() {
         console.log("Updated a shader constant!");
@@ -116,347 +109,462 @@ export default {
         .map(([k, v]) => k);
     },
   },
-  async mounted() {
-    this.canvas = this.$refs.canvas;
-    this.setupEventListeners();
-    this.calculateCanvasSize();
-    const shaderText = shader;
-    let { output: processed_wgsl, extracted_constant_defs } =
-      this.processWgsl(shaderText);
-
-    for (let def of extracted_constant_defs) {
-      this.fragment_shader_constants[def.name] = {
-        value: def.initial_value,
-        ...def,
-      };
-    }
-    this.canvas.width = this.X_RES;
-    this.canvas.height = this.Y_RES;
-
-    this.canvas.addEventListener("wheel", (event) => {
-      event.preventDefault();
-      this.state.zoomLevel += event.deltaY * -0.0001;
-      this.state.zoomLevel = Math.max(0.1, Math.min(10, this.state.zoomLevel));
-    });
-
-    document.addEventListener("keydown", (event) => {
-      this.SINGLE_MODE = false;
-      if (event.key == "s" && event.ctrlKey) {
-        this.saveCanvas();
-        event.preventDefault();
-      }
-    });
-
-    const START_TIME = new Date().getTime();
-
-    // Setting up the GPU Pipeline
-    // Checking to make sure browser supports WebGPU
-    if (!navigator.gpu) {
-      throw new Error("WebGPU not supported on this browser.");
-    }
-
-    // WebGPU's representation of the available gpu hardware
-    const adapter = await navigator.gpu.requestAdapter(); // returns a promise, so use await
-    if (!adapter) {
-      throw new Error("No appropriate GPUAdapter found.");
-    }
-
-    const context = this.canvas.getContext("webgpu");
-    const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
-    // The main interface through which most interaction with the GPU happens
-    const device = await adapter.requestDevice();
-    this.device = device;
-    context.configure({
-      device: device,
-      format: canvasFormat,
-    });
-
-    const HALF_WIDTH = 1.0;
-    const vertices = new Float32Array([
-      -HALF_WIDTH,
-      -HALF_WIDTH,
-      HALF_WIDTH,
-      -HALF_WIDTH,
-      HALF_WIDTH,
-      HALF_WIDTH,
-
-      -HALF_WIDTH,
-      -HALF_WIDTH,
-      HALF_WIDTH,
-      HALF_WIDTH,
-      -HALF_WIDTH,
-      HALF_WIDTH,
-    ]);
-
-    const vertexBuffer = device.createBuffer({
-      label: "Cell vertices",
-      size: vertices.byteLength,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    });
-
-    const vertexBufferLayout = {
-      arrayStride: 8,
-      attributes: [
-        {
-          format: "float32x2",
-          offset: 0,
-          shaderLocation: 0,
-        },
-      ],
-    };
-
-    const UNIFORM_BUFFER_SOURCES = [
-      [
-        "resolution",
-        { getter: (e) => [this.X_RES, this.Y_RES], primitive_type: "vec2f" },
-      ],
-      [
-        "time",
-        {
-          getter: (e) => [(new Date().getTime() - START_TIME) / 1000],
-          primitive_type: "f32",
-        },
-      ],
-      [
-        "mouse",
-        {
-          getter: (e) => [this.state.MOUSE_X, this.state.MOUSE_Y],
-          primitive_type: "vec2f",
-        },
-      ],
-      [
-        "zoom",
-        { getter: (e) => [this.state.zoomLevel], primitive_type: "f32" },
-      ],
-      [
-        "upos",
-        {
-          getter: (e) => [
-            this.state.position.x,
-            this.state.position.y,
-            this.state.position.z,
-          ],
-          primitive_type: "vec3f",
-        },
-      ],
-      [
-        "urot",
-        {
-          getter: (e) => [this.state.rotation.pitch, this.state.rotation.yaw],
-          primitive_type: "vec2f",
-        },
-      ],
-      ...extracted_constant_defs.map((def) => [
-        def.name,
-        {
-          getter: (e) => [this.fragment_shader_constants[def.name].value],
-          carrier: def.primitive_type == "f32" ? "Float32Array" : "Int32Array",
-          primitive_type: def.primitive_type,
-        },
-      ]),
-    ];
-    UNIFORM_BUFFER_SOURCES.forEach(
-      (e) => (e[1].primitive_type = e[1].primitive_type || "f32")
-    );
-    UNIFORM_BUFFER_SOURCES.forEach(
-      (e) => (e[1].carrier = e[1].carrier || "Float32Array")
-    );
-    const GROUPED_BUFFER_SOURCES = Object.groupBy(
-      UNIFORM_BUFFER_SOURCES,
-      ({ carrier }) => carrier || "Float32Array"
-    );
-
-    const typemap = {
-      Float32Array: (size) => `array<f32, ${size}>`,
-      Int32Array: (size) => `array<i32, ${size}>`,
-    };
-    const GROUPED_UNIFORM_BUFFERS = Object.entries(GROUPED_BUFFER_SOURCES).map(
-      ([buffer_type, strategies]) => {
-        function calc_values() {
-          let items = strategies.map(
-            ([constant_name, { getter, primitive_type }]) => [
-              constant_name,
-              getter(),
-              primitive_type,
-            ]
-          );
-          let composite_array = new window[buffer_type](
-            [].concat(...items.map((e) => e[1]))
-          );
-          return { items, composite_array };
-        }
-        let { items, composite_array } = calc_values();
-
-        return [
-          buffer_type,
-
-          {
-            atlas: {
-              ...computeIndexRanges(items, {
-                buffer_type,
-              }),
-            },
-            num_entries: items.length,
-            buffer_type,
-            primitive_type: strategies[0][1].primitive_type,
-            // BUFFER,
-            // update() {
-            //   device?.queue?.writeBuffer(
-            //     BUFFER,
-            //     0,
-            //     calc_values()?.composite_array
-            //   );
-            // },
-          },
-        ];
-      }
-    );
-
-    const UNIFORM_BUFFERS = Object.values(GROUPED_UNIFORM_BUFFERS).flatMap(
-      (e) => e[1]
-    );
-
-    let remapped_constants = [];
-    // for (let def of extracted_constant_defs) {
-    //   let { length, start, end, buffer_type } = UNIFORM_BUFFERS.map(
-    //     (e) => e.atlas[def.name]
-    //   ).find(Boolean);
-    //   remapped_constants.push(`const ${def.name} = CELO.${def.name};`);
-    // }
-
-    let struct_declarations = `struct TransferableConfig {
-      ${UNIFORM_BUFFERS.map((e) =>
-        Object.entries(e.atlas).map(([k, v]) => `${k}: ${v.primitive_type}`)
-      )
-        .map((e) => e + ",")
-        .join("\n")}
-    }`;
-    let uniform_declarations = `@group(0) @binding(0) var<uniform> C: TransferableConfig;`;
-
-    console.log("SHADER UNIFORMS:", "\n" + uniform_declarations);
-
-    const GPU_UNIFORMS = Object.fromEntries(UNIFORM_BUFFERS);
-
-    const PROCESSED_FRAGMENT_SHADER_CODE = [
-      struct_declarations,
-      uniform_declarations,
-      remapped_constants.join("\n"),
-      processed_wgsl,
-    ].join("\n\n");
-
-    let defs = makeShaderDataDefinitions(
-      [
-        struct_declarations,
-        uniform_declarations,
-        remapped_constants.join("\n"),
-      ].join("\n\n")
-    );
-
-    const UNIFORMS = makeStructuredView(defs.uniforms["C"]);
-
-    const uniformBuffer = device.createBuffer({
-      size: UNIFORMS.arrayBuffer.byteLength,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    let UPDATE_UNIFORMS = () => {
-      UNIFORMS.set(
-        Object.fromEntries(
-          GROUPED_BUFFER_SOURCES.Float32Array.map(([k, v]) => [k, v.getter()])
-        )
-      );
-      device.queue.writeBuffer(uniformBuffer, 0, UNIFORMS.arrayBuffer);
-    };
-
-    const cellShaderModule = device.createShaderModule({
-      label: "Cell shader",
-      code: PROCESSED_FRAGMENT_SHADER_CODE,
-    });
-
-    const bindGroupLayout = device.createBindGroupLayout({
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
-
-    const pipelineLayout = device.createPipelineLayout({
-      bindGroupLayouts: [bindGroupLayout],
-    });
-
-    const cellPipeline = device.createRenderPipeline({
-      layout: pipelineLayout,
-      vertex: {
-        module: cellShaderModule,
-        entryPoint: "vertexMain",
-        buffers: [vertexBufferLayout],
-      },
-      fragment: {
-        module: cellShaderModule,
-        entryPoint: "fragmentMain",
-        targets: [{ format: canvasFormat }],
-      },
-    });
-
-    const bindGroup = device.createBindGroup({
-      layout: cellPipeline.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
-    });
-
-    let frameCount = 0;
-    let lastTime = performance.now();
-
-    const draw = () => {
-      const run = async () => {
-        const perf = this.performanceEvaluator;
-        this.canvas.width = this.X_RES;
-        this.canvas.height = this.Y_RES;
-        // Inline use of performanceEvaluator for each function block
-        await perf("update_movement", this.updateMovement);
-
-        device.queue.writeBuffer(vertexBuffer, 0, vertices);
-
-        UPDATE_UNIFORMS();
-
-        const encoder = device.createCommandEncoder();
-        const pass = encoder.beginRenderPass({
-          colorAttachments: [
-            {
-              view: context.getCurrentTexture().createView(),
-              loadOp: "clear",
-              clearValue: { r: 0, g: 0, b: 0.4, a: 1 },
-              storeOp: "store",
-            },
-          ],
-        });
-
-        pass.setPipeline(cellPipeline);
-        pass.setVertexBuffer(0, vertexBuffer);
-        pass.setBindGroup(0, bindGroup);
-
-        pass.draw(vertices.length / 2);
-
-        pass.end();
-        device.queue.submit([encoder.finish()]);
-        perf("render", (e) => device.queue.onSubmittedWorkDone());
-      };
-      if (this.SINGLE_MODE && frameCount >= this.MAX_FRAMES) {
-      } else {
-        run();
-        frameCount++;
-      }
-      requestAnimationFrame(draw);
-    };
-    draw();
+  mounted() {
+    this.enterMainDrawLoop();
   },
   unmounted() {
     this.removeEventListeners();
     this.device?.destroy();
   },
   methods: {
+    async enterMainDrawLoop() {
+      if (this.wgsl_renderer) {
+        this.canvas = this.$refs.wgsl_canvas;
+        this.setupEventListeners();
+        this.calculateCanvasSize();
+        let MONKEY_CUBEMAP_IMAGES = JSON.parse(images_json);
+        const shaderText = shader;
+        let { output: processed_wgsl, extracted_constant_defs } =
+          this.processWgsl(shaderText);
+
+        for (let def of extracted_constant_defs) {
+          this.fragment_shader_constants[def.name] = {
+            value: def.initial_value,
+            ...def,
+          };
+        }
+        
+
+        this.canvas.addEventListener("wheel", (event) => {
+          event.preventDefault();
+          this.state.zoomLevel += event.deltaY * -0.0001;
+          this.state.zoomLevel = Math.max(
+            0.1,
+            Math.min(10, this.state.zoomLevel)
+          );
+        });
+
+        document.addEventListener("keydown", (event) => {
+          this.SINGLE_MODE = false;
+          if (event.key == "s" && event.ctrlKey) {
+            this.saveCanvas();
+            event.preventDefault();
+          }
+        });
+
+        const START_TIME = new Date().getTime();
+
+        // Setting up the GPU Pipeline
+        // Checking to make sure browser supports WebGPU
+        if (!navigator.gpu) {
+          throw new Error("WebGPU not supported on this browser.");
+        }
+
+        // WebGPU's representation of the available gpu hardware
+        const adapter = await navigator.gpu.requestAdapter(); // returns a promise, so use await
+        if (!adapter) {
+          throw new Error("No appropriate GPUAdapter found.");
+        }
+
+        const context = this.canvas.getContext("webgpu");
+        const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+        // The main interface through which most interaction with the GPU happens
+        const device = await adapter.requestDevice();
+        this.device = device;
+        context.configure({
+          device: device,
+          format: canvasFormat,
+        });
+
+        const HALF_WIDTH = 1.0;
+        const vertices = new Float32Array([
+          -HALF_WIDTH,
+          -HALF_WIDTH,
+          HALF_WIDTH,
+          -HALF_WIDTH,
+          HALF_WIDTH,
+          HALF_WIDTH,
+
+          -HALF_WIDTH,
+          -HALF_WIDTH,
+          HALF_WIDTH,
+          HALF_WIDTH,
+          -HALF_WIDTH,
+          HALF_WIDTH,
+        ]);
+
+        const vertexBuffer = device.createBuffer({
+          label: "Cell vertices",
+          size: vertices.byteLength,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+
+        const vertexBufferLayout = {
+          arrayStride: 8,
+          attributes: [
+            {
+              format: "float32x2",
+              offset: 0,
+              shaderLocation: 0,
+            },
+          ],
+        };
+
+        const UNIFORM_BUFFER_SOURCES = [
+          [
+            "resolution",
+            {
+              getter: (e) => [this.X_RES, this.Y_RES],
+              primitive_type: "vec2f",
+            },
+          ],
+          [
+            "time",
+            {
+              getter: (e) => [(new Date().getTime() - START_TIME) / 1000],
+              primitive_type: "f32",
+            },
+          ],
+          [
+            "mouse",
+            {
+              getter: (e) => [this.state.MOUSE_X, this.state.MOUSE_Y],
+              primitive_type: "vec2f",
+            },
+          ],
+          [
+            "zoom",
+            { getter: (e) => [this.state.zoomLevel], primitive_type: "f32" },
+          ],
+          [
+            "upos",
+            {
+              getter: (e) => [
+                this.state.position.x,
+                this.state.position.y,
+                this.state.position.z,
+              ],
+              primitive_type: "vec3f",
+            },
+          ],
+          [
+            "urot",
+            {
+              getter: (e) => [
+                this.state.rotation.pitch,
+                this.state.rotation.yaw,
+              ],
+              primitive_type: "vec2f",
+            },
+          ],
+          ...extracted_constant_defs.map((def) => [
+            def.name,
+            {
+              getter: (e) => [this.fragment_shader_constants[def.name].value],
+              carrier:
+                def.primitive_type == "f32" ? "Float32Array" : "Int32Array",
+              primitive_type: def.primitive_type,
+            },
+          ]),
+        ];
+        UNIFORM_BUFFER_SOURCES.forEach(
+          (e) => (e[1].primitive_type = e[1].primitive_type || "f32")
+        );
+        UNIFORM_BUFFER_SOURCES.forEach(
+          (e) => (e[1].carrier = e[1].carrier || "Float32Array")
+        );
+        const GROUPED_BUFFER_SOURCES = Object.groupBy(
+          UNIFORM_BUFFER_SOURCES,
+          ({ carrier }) => carrier || "Float32Array"
+        );
+
+        const typemap = {
+          Float32Array: (size) => `array<f32, ${size}>`,
+          Int32Array: (size) => `array<i32, ${size}>`,
+        };
+        const GROUPED_UNIFORM_BUFFERS = Object.entries(
+          GROUPED_BUFFER_SOURCES
+        ).map(([buffer_type, strategies]) => {
+          function calc_values() {
+            let items = strategies.map(
+              ([constant_name, { getter, primitive_type }]) => [
+                constant_name,
+                getter(),
+                primitive_type,
+              ]
+            );
+            let composite_array = new window[buffer_type](
+              [].concat(...items.map((e) => e[1]))
+            );
+            return { items, composite_array };
+          }
+          let { items, composite_array } = calc_values();
+
+          return [
+            buffer_type,
+
+            {
+              atlas: {
+                ...computeIndexRanges(items, {
+                  buffer_type,
+                }),
+              },
+              num_entries: items.length,
+              buffer_type,
+              primitive_type: strategies[0][1].primitive_type,
+              // BUFFER,
+              // update() {
+              //   device?.queue?.writeBuffer(
+              //     BUFFER,
+              //     0,
+              //     calc_values()?.composite_array
+              //   );
+              // },
+            },
+          ];
+        });
+
+        const UNIFORM_BUFFERS = Object.values(GROUPED_UNIFORM_BUFFERS).flatMap(
+          (e) => e[1]
+        );
+
+        let remapped_constants = [];
+        // for (let def of extracted_constant_defs) {
+        //   let { length, start, end, buffer_type } = UNIFORM_BUFFERS.map(
+        //     (e) => e.atlas[def.name]
+        //   ).find(Boolean);
+        //   remapped_constants.push(`const ${def.name} = CELO.${def.name};`);
+        // }
+
+        let struct_declarations = `struct TransferableConfig {
+      ${UNIFORM_BUFFERS.map((e) =>
+        Object.entries(e.atlas).map(([k, v]) => `${k}: ${v.primitive_type}`)
+      )
+        .map((e) => e + ",")
+        .join("\n")}
+    }`;
+        let uniform_declarations = `@group(0) @binding(0) var<uniform> C: TransferableConfig;`;
+
+        console.log("SHADER UNIFORMS:", "\n" + uniform_declarations);
+
+        const GPU_UNIFORMS = Object.fromEntries(UNIFORM_BUFFERS);
+
+        const createTexture = (device, textureArray, size) => {
+          const texture = device.createTexture({
+            size: [size, size, 1],
+            format: "rgba8unorm",
+            usage:
+              GPUTextureUsage.TEXTURE_BINDING |
+              GPUTextureUsage.COPY_DST |
+              GPUTextureUsage.RENDER_ATTACHMENT,
+          });
+
+          const textureData = new Uint8Array(size * size * 4); // 4 channels for rgba8unorm
+          for (let y = 0; y < size; y++) {
+            for (let x = 0; x < size; x++) {
+              const value = textureArray[y][x] * 255; // Scale float [0,1] to [0,255]
+              const index = (y * size + x) * 4;
+              textureData[index] = value; // R
+              textureData[index + 1] = value; // G
+              textureData[index + 2] = value; // B
+              textureData[index + 3] = 255; // A (fully opaque)
+            }
+          }
+
+          device.queue.writeTexture(
+            { texture: texture },
+            textureData,
+            { bytesPerRow: size * 4 },
+            { width: size, height: size, depthOrArrayLayers: 1 }
+          );
+
+          return texture;
+        };
+
+        const createSampler = (device) => {
+          return device.createSampler({
+            addressModeU: "repeat",
+            addressModeV: "repeat",
+            magFilter: "linear",
+            minFilter: "linear",
+            mipmapFilter: "linear",
+          });
+        };
+
+        const textures = {};
+        const samplers = {};
+        for (const [name, array] of Object.entries(MONKEY_CUBEMAP_IMAGES)) {
+          const size = array.length;
+          textures[name] = createTexture(device, array, size);
+          samplers[name] = createSampler(device);
+        }
+
+        const textureBindings = Object.keys(textures)
+          .map(
+            (name, i) =>
+              `@group(0) @binding(${i + 1}) var ${name}: texture_2d<f32>;`
+          )
+          .join("\n");
+        // console.log(textureBindings);
+
+        const samplerBindings = Object.keys(textures)
+          .map(
+            (name, i) =>
+              `@group(0) @binding(${
+                Object.keys(textures).length + i + 1
+              }) var ${name}_sampler: sampler;`
+          )
+          .join("\n");
+
+        uniform_declarations = [
+          uniform_declarations,
+          textureBindings,
+          samplerBindings,
+        ].join("\n");
+        console.log(uniform_declarations);
+
+        const PROCESSED_FRAGMENT_SHADER_CODE = [
+          "diagnostic(off, derivative_uniformity);",
+          struct_declarations,
+          uniform_declarations,
+          remapped_constants.join("\n"),
+          processed_wgsl,
+        ].join("\n\n");
+
+        let defs = makeShaderDataDefinitions(
+          [
+            struct_declarations,
+            uniform_declarations,
+            remapped_constants.join("\n"),
+          ].join("\n\n")
+        );
+
+        const UNIFORMS = makeStructuredView(defs.uniforms["C"]);
+
+        const uniformBuffer = device.createBuffer({
+          size: UNIFORMS.arrayBuffer.byteLength,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+
+        let UPDATE_UNIFORMS = () => {
+          let resolved = Object.fromEntries(
+            GROUPED_BUFFER_SOURCES.Float32Array.map(([k, v]) => [k, v.getter()])
+          );
+          UNIFORMS.set(resolved);
+          device.queue.writeBuffer(uniformBuffer, 0, UNIFORMS.arrayBuffer);
+          return resolved;
+        };
+
+        const cellShaderModule = device.createShaderModule({
+          label: "Cell shader",
+          code: PROCESSED_FRAGMENT_SHADER_CODE,
+        });
+
+        const bindGroupLayout = device.createBindGroupLayout({
+          entries: [
+            {
+              binding: 0,
+              visibility: GPUShaderStage.FRAGMENT,
+              buffer: { type: "uniform" },
+            },
+            ...Object.keys(textures).map((_, i) => ({
+              binding: i + 1,
+              visibility: GPUShaderStage.FRAGMENT,
+              texture: { sampleType: "float" },
+            })),
+            ...Object.keys(samplers).map((_, i) => ({
+              binding: i + 1 + Object.keys(textures).length,
+              visibility: GPUShaderStage.FRAGMENT,
+              sampler: {},
+            })),
+          ],
+        });
+
+        const pipelineLayout = device.createPipelineLayout({
+          bindGroupLayouts: [bindGroupLayout],
+        });
+
+        const cellPipeline = device.createRenderPipeline({
+          layout: pipelineLayout,
+          vertex: {
+            module: cellShaderModule,
+            entryPoint: "vertexMain",
+            buffers: [vertexBufferLayout],
+          },
+          fragment: {
+            module: cellShaderModule,
+            entryPoint: "fragmentMain",
+            targets: [{ format: canvasFormat }],
+          },
+        });
+
+        const bindGroup = device.createBindGroup({
+          layout: cellPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: uniformBuffer } },
+            ...Object.values(textures).map((texture, i) => ({
+              binding: i + 1,
+              resource: texture.createView(),
+            })),
+            ...Object.values(samplers).map((sampler, i) => ({
+              binding: i + 1 + Object.keys(textures).length,
+              resource: sampler,
+            })),
+          ],
+        });
+
+        let frameCount = 0;
+        let lastTime = performance.now();
+
+        const draw = () => {
+          const run = async () => {
+            const perf = this.performanceEvaluator;
+            this.canvas.width = this.X_RES;
+            this.canvas.height = this.Y_RES;
+            // Inline use of performanceEvaluator for each function block
+            await perf("update_movement", this.updateMovement);
+
+            device.queue.writeBuffer(vertexBuffer, 0, vertices);
+
+            let new_uniforms = UPDATE_UNIFORMS();
+            window.uniforms = new_uniforms;
+
+            const encoder = device.createCommandEncoder();
+            const pass = encoder.beginRenderPass({
+              colorAttachments: [
+                {
+                  view: context.getCurrentTexture().createView(),
+                  loadOp: "clear",
+                  clearValue: { r: 0, g: 0, b: 0.4, a: 1 },
+                  storeOp: "store",
+                },
+              ],
+            });
+
+            pass.setPipeline(cellPipeline);
+            pass.setVertexBuffer(0, vertexBuffer);
+            pass.setBindGroup(0, bindGroup);
+
+            pass.draw(vertices.length / 2);
+
+            pass.end();
+            device.queue.submit([encoder.finish()]);
+            perf("render", (e) => device.queue.onSubmittedWorkDone());
+          };
+          if (this.SINGLE_MODE && frameCount >= this.MAX_FRAMES) {
+          } else {
+            run();
+            frameCount++;
+          }
+          requestAnimationFrame(draw);
+        };
+        draw();
+      } else {
+        let app = new CenoteGame(this.$refs.babylon_canvas);
+        await app.init();
+        app.run();
+      }
+    },
     zeroPerfCounters() {
       Object.keys(this.performance_metrics).forEach((k) => {
         this.performance_metrics[k].count = 0;
@@ -573,8 +681,8 @@ export default {
       this.X_RES = Math.floor(canvasWidth);
       this.Y_RES = Math.floor(canvasHeight);
 
-      this.$refs.canvas.width = this.X_RES;
-      this.$refs.canvas.height = this.Y_RES;
+      this.$refs.wgsl_canvas.width = this.X_RES;
+      this.$refs.wgsl_canvas.height = this.Y_RES;
     },
     updateMovement() {
       // Reset movement accumulators
@@ -681,7 +789,8 @@ export default {
     handleMouseUp() {
       this.state.isMouseDown = false;
     },
-    updateMouse(e) {
+    updateMouse: function updateMouse(e) {
+      debugger
       const domain = this.canvas.getBoundingClientRect();
       if (this.state.mousePressed) {
         this.state.MOUSE_X = e.clientX - domain.left - this.X_RES / 2;

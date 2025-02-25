@@ -1,1183 +1,7 @@
-// @group(0) @binding(0) var<uniform> resolution: vec2f;
-// @group(0) @binding(1) var<uniform> time: f32;
-// @group(0) @binding(2) var<uniform> mouse: vec2f;
-// @group(0) @binding(3) var<uniform> zoom: f32;
-// @group(0) @binding(4) var<uniform> upos: vec3f;
-// @group(0) @binding(5) var<uniform> urot: vec2f;
+#define DISABLE_UNIFORMITY_ANALYSIS
 
-
-// psrdnoise3.wgsl
-
-//
-// Authors: Stefan Gustavson (stefan.gustavson@gmail.com)
-// and Ian McEwan (ijm567@gmail.com)
-// Version 2022-02-28, published under the MIT license (see below)
-//
-// Copyright (c) 2021-2022 Stefan Gustavson and Ian McEwan.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included
-// in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
-//
-
-// WGSL lacks overloading of user defined functions, and considering
-// the unfinished state of the platform I don't trust the dead code
-// removal, so the functions are named after their argument lists:
-//
-//	psrnoise3(x: vec3<f32>, p: vec3<f32>, alpha: f32) -> f32
-//	psnoise3(x: vec3<f32>, p: vec3<f32>) -> f32
-//	srnoise3(x: vec3<f32>, alpha: f32) -> f32
-//	snoise3(x: vec3<f32>) -> f32
-//	psrdnoise3(x: vec3<f32>, p: vec3<f32>, alpha: f32) -> NG3
-//	psdnoise3(x: vec3<f32>, p: vec3<f32>) -> NG3
-//	srdnoise3(x: vec3<f32>, alpha: f32) -> NG3
-//	sdnoise3(x: vec3<f32>) -> NG3
-// The struct type NG3 is declared below.
-
-// Struct for returning noise and its analytic gradient
-struct NG3 {
-	noise: f32,
-	gradient: vec3<f32>
-};
-
-fn mod289v4f_psrn(i: vec4<f32>) -> vec4<f32> {
-	return i - floor(i / 289.0) * 289.0;
-}
-
-fn permute289v4f_psrn(i: vec4<f32>) -> vec4<f32>
-{
-	var im: vec4<f32> = mod289v4f_psrn(i);
-	return mod289v4f_psrn((im*34.0 + 10.0)*im);
-}
-
-fn psrnoise3(x: vec3<f32>, p: vec3<f32>, alpha: f32) -> f32
-{
-	let M = mat3x3<f32>(0.0, 1.0, 1.0, 1.0, 0.0, 1.0,  1.0, 1.0, 0.0);
-	let Mi = mat3x3<f32>(-0.5, 0.5, 0.5, 0.5,-0.5, 0.5, 0.5, 0.5,-0.5);
-
-	var uvw: vec3<f32>;
-	var i0: vec3<f32>;
-	var i1: vec3<f32>;
-	var i2: vec3<f32>;
-	var i3: vec3<f32>;
-	var f0: vec3<f32>;
-	var gt_: vec3<f32>;
-	var lt_: vec3<f32>;
-	var gt: vec3<f32>;
-	var lt: vec3<f32>;
-	var o1: vec3<f32>;
-	var o2: vec3<f32>;
-	var v0: vec3<f32>;
-	var v1: vec3<f32>;
-	var v2: vec3<f32>;
-	var v3: vec3<f32>;
-	var x0: vec3<f32>;
-	var x1: vec3<f32>;
-	var x2: vec3<f32>;
-	var x3: vec3<f32>;
-	
-	uvw = M * x;
-	i0 = floor(uvw);
-	f0 = uvw - i0;
-	gt_ = step(f0.xyx, f0.yzz);
-	lt_ = 1.0 - gt_;
-	gt = vec3<f32>(lt_.z, gt_.xy);
-	lt = vec3<f32>(lt_.xy, gt_.z);
-	o1 = min( gt, lt );
-	o2 = max( gt, lt );
-	i1 = i0 + o1;
-	i2 = i0 + o2;
-	i3 = i0 + vec3<f32>(1.0,1.0,1.0);
-	v0 = Mi * i0;
-	v1 = Mi * i1;
-	v2 = Mi * i2;
-	v3 = Mi * i3;
-	x0 = x - v0;
-	x1 = x - v1;
-	x2 = x - v2;
-	x3 = x - v3;
-	
-	var vx: vec4<f32>;
-	var vy: vec4<f32>;
-	var vz: vec4<f32>;
-
-	if(any(p > vec3<f32>(0.0))) {
-		vx = vec4<f32>(v0.x, v1.x, v2.x, v3.x);
-		vy = vec4<f32>(v0.y, v1.y, v2.y, v3.y);
-		vz = vec4<f32>(v0.z, v1.z, v2.z, v3.z);
-		if(p.x > 0.0) {
-			vx = vx - floor(vx / p.x) * p.x;
-		}
-		if(p.y > 0.0) {
-			vy = vy - floor(vy / p.y) * p.y;
-		}
-		if(p.z > 0.0) {
-			vz = vz - floor(vz / p.z) * p.z;
-		}
-		i0 = floor(M * vec3<f32>(vx.x, vy.x, vz.x) + 0.5);
-		i1 = floor(M * vec3<f32>(vx.y, vy.y, vz.y) + 0.5);
-		i2 = floor(M * vec3<f32>(vx.z, vy.z, vz.z) + 0.5);
-		i3 = floor(M * vec3<f32>(vx.w, vy.w, vz.w) + 0.5);
-	}
-	
-	var hash: vec4<f32>;
-	var theta: vec4<f32>;
-	var sz: vec4<f32>;
-	var psi: vec4<f32>;
-	var St: vec4<f32>;
-	var Ct: vec4<f32>;
-	var sz_: vec4<f32>;
-
-	hash = permute289v4f_psrn( permute289v4f_psrn( permute289v4f_psrn( 
-		vec4<f32>(i0.z, i1.z, i2.z, i3.z ))
-		+ vec4<f32>(i0.y, i1.y, i2.y, i3.y ))
-		+ vec4<f32>(i0.x, i1.x, i2.x, i3.x ));
-	theta = hash * 3.883222077;
-	sz = hash * -0.006920415 + 0.996539792;
-	psi = hash * 0.108705628;
-	Ct = cos(theta);
-	St = sin(theta);
-	sz_ = sqrt( 1.0 - sz*sz );
-
-	var gx: vec4<f32>;
-	var gy: vec4<f32>;
-	var gz: vec4<f32>;
-	var px: vec4<f32>;
-	var py: vec4<f32>;
-	var pz: vec4<f32>;
-	var Sp: vec4<f32>;
-	var Cp: vec4<f32>;
-	var Ctp: vec4<f32>;
-	var qx: vec4<f32>;
-	var qy: vec4<f32>;
-	var qz: vec4<f32>;
-	var Sa: vec4<f32>;
-	var Ca: vec4<f32>;
-
-	if(alpha != 0.0)
-	{
-		px = Ct * sz_;
-		py = St * sz_;
-		pz = sz;
-		Sp = sin(psi);
-		Cp = cos(psi);
-		Ctp = St*Sp - Ct*Cp;
-		qx = mix( Ctp*St, Sp, sz);
-		qy = mix(-Ctp*Ct, Cp, sz);
-		qz = -(py*Cp + px*Sp);
-		Sa = vec4<f32>(sin(alpha));
-		Ca = vec4<f32>(cos(alpha));
-		gx = Ca*px + Sa*qx;
-		gy = Ca*py + Sa*qy;
-		gz = Ca*pz + Sa*qz;
-	}
-	else
-	{
-		gx = Ct * sz_;
-		gy = St * sz_;
-		gz = sz;  
-	}
-	
-	var g0: vec3<f32>;
-	var g1: vec3<f32>;
-	var g2: vec3<f32>;
-	var g3: vec3<f32>;
-	var w: vec4<f32>;
-	var w2: vec4<f32>;
-	var w3: vec4<f32>;
-	var gdotx: vec4<f32>;
-	var n: f32;
-	
-	g0 = vec3<f32>(gx.x, gy.x, gz.x);
-	g1 = vec3<f32>(gx.y, gy.y, gz.y);
-	g2 = vec3<f32>(gx.z, gy.z, gz.z);
-	g3 = vec3<f32>(gx.w, gy.w, gz.w);
-	w = 0.5 - vec4<f32>(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3));
-	w = max(w, vec4<f32>(0.0, 0.0, 0.0, 0.0));
-	w2 = w * w;
-	w3 = w2 * w;
-	gdotx = vec4<f32>(dot(g0,x0), dot(g1,x1), dot(g2,x2), dot(g3,x3));
-	n = dot(w3, gdotx);
-	
-	return 39.5 * n;
-}
-
-fn psnoise3(x: vec3<f32>, p: vec3<f32>) -> f32
-{
-	let M = mat3x3<f32>(0.0, 1.0, 1.0, 1.0, 0.0, 1.0,  1.0, 1.0, 0.0);
-	let Mi = mat3x3<f32>(-0.5, 0.5, 0.5, 0.5,-0.5, 0.5, 0.5, 0.5,-0.5);
-
-	var uvw: vec3<f32>;
-	var i0: vec3<f32>;
-	var i1: vec3<f32>;
-	var i2: vec3<f32>;
-	var i3: vec3<f32>;
-	var f0: vec3<f32>;
-	var gt_: vec3<f32>;
-	var lt_: vec3<f32>;
-	var gt: vec3<f32>;
-	var lt: vec3<f32>;
-	var o1: vec3<f32>;
-	var o2: vec3<f32>;
-	var v0: vec3<f32>;
-	var v1: vec3<f32>;
-	var v2: vec3<f32>;
-	var v3: vec3<f32>;
-	var x0: vec3<f32>;
-	var x1: vec3<f32>;
-	var x2: vec3<f32>;
-	var x3: vec3<f32>;
-	
-	uvw = M * x;
-	i0 = floor(uvw);
-	f0 = uvw - i0;
-	gt_ = step(f0.xyx, f0.yzz);
-	lt_ = 1.0 - gt_;
-	gt = vec3<f32>(lt_.z, gt_.xy);
-	lt = vec3<f32>(lt_.xy, gt_.z);
-	o1 = min( gt, lt );
-	o2 = max( gt, lt );
-	i1 = i0 + o1;
-	i2 = i0 + o2;
-	i3 = i0 + vec3<f32>(1.0,1.0,1.0);
-	v0 = Mi * i0;
-	v1 = Mi * i1;
-	v2 = Mi * i2;
-	v3 = Mi * i3;
-	x0 = x - v0;
-	x1 = x - v1;
-	x2 = x - v2;
-	x3 = x - v3;
-	
-	var vx: vec4<f32>;
-	var vy: vec4<f32>;
-	var vz: vec4<f32>;
-
-	if(any(p > vec3<f32>(0.0))) {
-		vx = vec4<f32>(v0.x, v1.x, v2.x, v3.x);
-		vy = vec4<f32>(v0.y, v1.y, v2.y, v3.y);
-		vz = vec4<f32>(v0.z, v1.z, v2.z, v3.z);
-		if(p.x > 0.0) {
-			vx = vx - floor(vx / p.x) * p.x;
-		}
-		if(p.y > 0.0) {
-			vy = vy - floor(vy / p.y) * p.y;
-		}
-		if(p.z > 0.0) {
-			vz = vz - floor(vz / p.z) * p.z;
-		}
-		i0 = floor(M * vec3<f32>(vx.x, vy.x, vz.x) + 0.5);
-		i1 = floor(M * vec3<f32>(vx.y, vy.y, vz.y) + 0.5);
-		i2 = floor(M * vec3<f32>(vx.z, vy.z, vz.z) + 0.5);
-		i3 = floor(M * vec3<f32>(vx.w, vy.w, vz.w) + 0.5);
-	}
-	
-	var hash: vec4<f32>;
-	var theta: vec4<f32>;
-	var sz: vec4<f32>;
-	var psi: vec4<f32>;
-	var St: vec4<f32>;
-	var Ct: vec4<f32>;
-	var sz_: vec4<f32>;
-
-	hash = permute289v4f_psrn( permute289v4f_psrn( permute289v4f_psrn( 
-		vec4<f32>(i0.z, i1.z, i2.z, i3.z ))
-		+ vec4<f32>(i0.y, i1.y, i2.y, i3.y ))
-		+ vec4<f32>(i0.x, i1.x, i2.x, i3.x ));
-	theta = hash * 3.883222077;
-	sz = hash * -0.006920415 + 0.996539792;
-	psi = hash * 0.108705628;
-	Ct = cos(theta);
-	St = sin(theta);
-	sz_ = sqrt( 1.0 - sz*sz );
-
-	var gx: vec4<f32>;
-	var gy: vec4<f32>;
-	var gz: vec4<f32>;
-
-	gx = Ct * sz_;
-	gy = St * sz_;
-	gz = sz;  
-	
-	var g0: vec3<f32>;
-	var g1: vec3<f32>;
-	var g2: vec3<f32>;
-	var g3: vec3<f32>;
-	var w: vec4<f32>;
-	var w2: vec4<f32>;
-	var w3: vec4<f32>;
-	var gdotx: vec4<f32>;
-	var n: f32;
-	
-	g0 = vec3<f32>(gx.x, gy.x, gz.x);
-	g1 = vec3<f32>(gx.y, gy.y, gz.y);
-	g2 = vec3<f32>(gx.z, gy.z, gz.z);
-	g3 = vec3<f32>(gx.w, gy.w, gz.w);
-	w = 0.5 - vec4<f32>(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3));
-	w = max(w, vec4<f32>(0.0, 0.0, 0.0, 0.0));
-	w2 = w * w;
-	w3 = w2 * w;
-	gdotx = vec4<f32>(dot(g0,x0), dot(g1,x1), dot(g2,x2), dot(g3,x3));
-	n = dot(w3, gdotx);
-	
-	return 39.5 * n;
-}
-
-fn srnoise3(x: vec3<f32>, alpha: f32) -> f32
-{
-	let M = mat3x3<f32>(0.0, 1.0, 1.0, 1.0, 0.0, 1.0,  1.0, 1.0, 0.0);
-	let Mi = mat3x3<f32>(-0.5, 0.5, 0.5, 0.5,-0.5, 0.5, 0.5, 0.5,-0.5);
-
-	var uvw: vec3<f32>;
-	var i0: vec3<f32>;
-	var i1: vec3<f32>;
-	var i2: vec3<f32>;
-	var i3: vec3<f32>;
-	var f0: vec3<f32>;
-	var gt_: vec3<f32>;
-	var lt_: vec3<f32>;
-	var gt: vec3<f32>;
-	var lt: vec3<f32>;
-	var o1: vec3<f32>;
-	var o2: vec3<f32>;
-	var v0: vec3<f32>;
-	var v1: vec3<f32>;
-	var v2: vec3<f32>;
-	var v3: vec3<f32>;
-	var x0: vec3<f32>;
-	var x1: vec3<f32>;
-	var x2: vec3<f32>;
-	var x3: vec3<f32>;
-	
-	uvw = M * x;
-	i0 = floor(uvw);
-	f0 = uvw - i0;
-	gt_ = step(f0.xyx, f0.yzz);
-	lt_ = 1.0 - gt_;
-	gt = vec3<f32>(lt_.z, gt_.xy);
-	lt = vec3<f32>(lt_.xy, gt_.z);
-	o1 = min( gt, lt );
-	o2 = max( gt, lt );
-	i1 = i0 + o1;
-	i2 = i0 + o2;
-	i3 = i0 + vec3<f32>(1.0,1.0,1.0);
-	v0 = Mi * i0;
-	v1 = Mi * i1;
-	v2 = Mi * i2;
-	v3 = Mi * i3;
-	x0 = x - v0;
-	x1 = x - v1;
-	x2 = x - v2;
-	x3 = x - v3;
-	
-	var hash: vec4<f32>;
-	var theta: vec4<f32>;
-	var sz: vec4<f32>;
-	var psi: vec4<f32>;
-	var St: vec4<f32>;
-	var Ct: vec4<f32>;
-	var sz_: vec4<f32>;
-
-	hash = permute289v4f_psrn( permute289v4f_psrn( permute289v4f_psrn( 
-		vec4<f32>(i0.z, i1.z, i2.z, i3.z ))
-		+ vec4<f32>(i0.y, i1.y, i2.y, i3.y ))
-		+ vec4<f32>(i0.x, i1.x, i2.x, i3.x ));
-	theta = hash * 3.883222077;
-	sz = hash * -0.006920415 + 0.996539792;
-	psi = hash * 0.108705628;
-	Ct = cos(theta);
-	St = sin(theta);
-	sz_ = sqrt( 1.0 - sz*sz );
-
-	var gx: vec4<f32>;
-	var gy: vec4<f32>;
-	var gz: vec4<f32>;
-	var px: vec4<f32>;
-	var py: vec4<f32>;
-	var pz: vec4<f32>;
-	var Sp: vec4<f32>;
-	var Cp: vec4<f32>;
-	var Ctp: vec4<f32>;
-	var qx: vec4<f32>;
-	var qy: vec4<f32>;
-	var qz: vec4<f32>;
-	var Sa: vec4<f32>;
-	var Ca: vec4<f32>;
-
-	if(alpha != 0.0)
-	{
-		px = Ct * sz_;
-		py = St * sz_;
-		pz = sz;
-		Sp = sin(psi);
-		Cp = cos(psi);
-		Ctp = St*Sp - Ct*Cp;
-		qx = mix( Ctp*St, Sp, sz);
-		qy = mix(-Ctp*Ct, Cp, sz);
-		qz = -(py*Cp + px*Sp);
-		Sa = vec4<f32>(sin(alpha));
-		Ca = vec4<f32>(cos(alpha));
-		gx = Ca*px + Sa*qx;
-		gy = Ca*py + Sa*qy;
-		gz = Ca*pz + Sa*qz;
-	}
-	else
-	{
-		gx = Ct * sz_;
-		gy = St * sz_;
-		gz = sz;  
-	}
-	
-	var g0: vec3<f32>;
-	var g1: vec3<f32>;
-	var g2: vec3<f32>;
-	var g3: vec3<f32>;
-	var w: vec4<f32>;
-	var w2: vec4<f32>;
-	var w3: vec4<f32>;
-	var gdotx: vec4<f32>;
-	var n: f32;
-	
-	g0 = vec3<f32>(gx.x, gy.x, gz.x);
-	g1 = vec3<f32>(gx.y, gy.y, gz.y);
-	g2 = vec3<f32>(gx.z, gy.z, gz.z);
-	g3 = vec3<f32>(gx.w, gy.w, gz.w);
-	w = 0.5 - vec4<f32>(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3));
-	w = max(w, vec4<f32>(0.0, 0.0, 0.0, 0.0));
-	w2 = w * w;
-	w3 = w2 * w;
-	gdotx = vec4<f32>(dot(g0,x0), dot(g1,x1), dot(g2,x2), dot(g3,x3));
-	n = dot(w3, gdotx);
-	
-	return 39.5 * n;
-}
-
-fn snoise3(x: vec3<f32>) -> f32
-{
-	let M = mat3x3<f32>(0.0, 1.0, 1.0, 1.0, 0.0, 1.0,  1.0, 1.0, 0.0);
-	let Mi = mat3x3<f32>(-0.5, 0.5, 0.5, 0.5,-0.5, 0.5, 0.5, 0.5,-0.5);
-
-	var uvw: vec3<f32>;
-	var i0: vec3<f32>;
-	var i1: vec3<f32>;
-	var i2: vec3<f32>;
-	var i3: vec3<f32>;
-	var f0: vec3<f32>;
-	var gt_: vec3<f32>;
-	var lt_: vec3<f32>;
-	var gt: vec3<f32>;
-	var lt: vec3<f32>;
-	var o1: vec3<f32>;
-	var o2: vec3<f32>;
-	var v0: vec3<f32>;
-	var v1: vec3<f32>;
-	var v2: vec3<f32>;
-	var v3: vec3<f32>;
-	var x0: vec3<f32>;
-	var x1: vec3<f32>;
-	var x2: vec3<f32>;
-	var x3: vec3<f32>;
-	
-	uvw = M * x;
-	i0 = floor(uvw);
-	f0 = uvw - i0;
-	gt_ = step(f0.xyx, f0.yzz);
-	lt_ = 1.0 - gt_;
-	gt = vec3<f32>(lt_.z, gt_.xy);
-	lt = vec3<f32>(lt_.xy, gt_.z);
-	o1 = min( gt, lt );
-	o2 = max( gt, lt );
-	i1 = i0 + o1;
-	i2 = i0 + o2;
-	i3 = i0 + vec3<f32>(1.0,1.0,1.0);
-	v0 = Mi * i0;
-	v1 = Mi * i1;
-	v2 = Mi * i2;
-	v3 = Mi * i3;
-	x0 = x - v0;
-	x1 = x - v1;
-	x2 = x - v2;
-	x3 = x - v3;
-	
-	var hash: vec4<f32>;
-	var theta: vec4<f32>;
-	var sz: vec4<f32>;
-	var psi: vec4<f32>;
-	var St: vec4<f32>;
-	var Ct: vec4<f32>;
-	var sz_: vec4<f32>;
-
-	hash = permute289v4f_psrn( permute289v4f_psrn( permute289v4f_psrn( 
-		vec4<f32>(i0.z, i1.z, i2.z, i3.z ))
-		+ vec4<f32>(i0.y, i1.y, i2.y, i3.y ))
-		+ vec4<f32>(i0.x, i1.x, i2.x, i3.x ));
-	theta = hash * 3.883222077;
-	sz = hash * -0.006920415 + 0.996539792;
-	psi = hash * 0.108705628;
-	Ct = cos(theta);
-	St = sin(theta);
-	sz_ = sqrt( 1.0 - sz*sz );
-
-	var gx: vec4<f32>;
-	var gy: vec4<f32>;
-	var gz: vec4<f32>;
-
-	gx = Ct * sz_;
-	gy = St * sz_;
-	gz = sz;  
-	
-	var g0: vec3<f32>;
-	var g1: vec3<f32>;
-	var g2: vec3<f32>;
-	var g3: vec3<f32>;
-	var w: vec4<f32>;
-	var w2: vec4<f32>;
-	var w3: vec4<f32>;
-	var gdotx: vec4<f32>;
-	var n: f32;
-	
-	g0 = vec3<f32>(gx.x, gy.x, gz.x);
-	g1 = vec3<f32>(gx.y, gy.y, gz.y);
-	g2 = vec3<f32>(gx.z, gy.z, gz.z);
-	g3 = vec3<f32>(gx.w, gy.w, gz.w);
-	w = 0.5 - vec4<f32>(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3));
-	w = max(w, vec4<f32>(0.0, 0.0, 0.0, 0.0));
-	w2 = w * w;
-	w3 = w2 * w;
-	gdotx = vec4<f32>(dot(g0,x0), dot(g1,x1), dot(g2,x2), dot(g3,x3));
-	n = dot(w3, gdotx);
-	
-	return 39.5 * n;
-}
-
-fn snoise3offset(x: vec3<f32>, offset: f32) -> f32 {
-    let M = mat3x3<f32>(0.0, 1.0, 1.0, 1.0, 0.0, 1.0,  1.0, 1.0, 0.0);
-    let Mi = mat3x3<f32>(-0.5, 0.5, 0.5, 0.5,-0.5, 0.5, 0.5, 0.5,-0.5);
-
-    // Offset modifications
-    let offset_x = offset * sin(x.x * 2.0 * 3.14159 / 100.0);
-    let offset_y = offset * cos(x.y * 2.0 * 3.14159 / 100.0);
-    let offset_z = offset * sin(x.z * 2.0 * 3.14159 / 100.0);
-    let x_mod = vec3<f32>(x.x + offset_x, x.y + offset_y, x.z + offset_z);
-
-    var uvw: vec3<f32> = M * x_mod;
-    let i0 = floor(uvw);
-    let f0 = uvw - i0;
-    let gt_ = step(f0.xyx, f0.yzz);
-    let lt_ = 1.0 - gt_;
-    let gt = vec3<f32>(lt_.z, gt_.xy);
-    let lt = vec3<f32>(lt_.xy, gt_.z);
-    let o1 = min(gt, lt);
-    let o2 = max(gt, lt);
-    let i1 = i0 + o1;
-    let i2 = i0 + o2;
-    let i3 = i0 + vec3<f32>(1.0, 1.0, 1.0);
-
-    let v0 = Mi * i0;
-    let v1 = Mi * i1;
-    let v2 = Mi * i2;
-    let v3 = Mi * i3;
-
-    let x0 = x_mod - v0;
-    let x1 = x_mod - v1;
-    let x2 = x_mod - v2;
-    let x3 = x_mod - v3;
-
-    // Continue with noise computation as before
-    var hash: vec4<f32>;
-    var theta: vec4<f32>;
-    var sz: vec4<f32>;
-    var psi: vec4<f32>;
-    var St: vec4<f32>;
-    var Ct: vec4<f32>;
-    var sz_: vec4<f32>;
-
-    hash = permute289v4f_psrn(permute289v4f_psrn(permute289v4f_psrn(
-        vec4<f32>(i0.z, i1.z, i2.z, i3.z))
-        + vec4<f32>(i0.y, i1.y, i2.y, i3.y))
-        + vec4<f32>(i0.x, i1.x, i2.x, i3.x));
-    theta = hash * 3.883222077;
-    sz = hash * -0.006920415 + 0.996539792;
-    psi = hash * 0.108705628;
-    Ct = cos(theta);
-    St = sin(theta);
-    sz_ = sqrt(1.0 - sz*sz);
-
-    var gx: vec4<f32>;
-    var gy: vec4<f32>;
-    var gz: vec4<f32>;
-    gx = Ct * sz_;
-    gy = St * sz_;
-    gz = sz;  
-	
-	var g0: vec3<f32>;
-	var g1: vec3<f32>;
-	var g2: vec3<f32>;
-	var g3: vec3<f32>;
-	var w: vec4<f32>;
-	var w2: vec4<f32>;
-	var w3: vec4<f32>;
-	var gdotx: vec4<f32>;
-	var n: f32;
-	
-	g0 = vec3<f32>(gx.x, gy.x, gz.x);
-	g1 = vec3<f32>(gx.y, gy.y, gz.y);
-	g2 = vec3<f32>(gx.z, gy.z, gz.z);
-	g3 = vec3<f32>(gx.w, gy.w, gz.w);
-	w = 0.5 - vec4<f32>(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3));
-	w = max(w, vec4<f32>(0.0, 0.0, 0.0, 0.0));
-	w2 = w * w;
-	w3 = w2 * w;
-	gdotx = vec4<f32>(dot(g0,x0), dot(g1,x1), dot(g2,x2), dot(g3,x3));
-	n = dot(w3, gdotx);
-	
-	return 39.5 * n;
-}
-
-// Versions computing their gradient and returning a struct
-
-fn psrdnoise3(x: vec3<f32>, p: vec3<f32>, alpha: f32) -> NG3
-{
-	let M = mat3x3<f32>(0.0, 1.0, 1.0, 1.0, 0.0, 1.0,  1.0, 1.0, 0.0);
-	let Mi = mat3x3<f32>(-0.5, 0.5, 0.5, 0.5,-0.5, 0.5, 0.5, 0.5,-0.5);
-
-	var uvw: vec3<f32>;
-	var i0: vec3<f32>;
-	var i1: vec3<f32>;
-	var i2: vec3<f32>;
-	var i3: vec3<f32>;
-	var f0: vec3<f32>;
-	var gt_: vec3<f32>;
-	var lt_: vec3<f32>;
-	var gt: vec3<f32>;
-	var lt: vec3<f32>;
-	var o1: vec3<f32>;
-	var o2: vec3<f32>;
-	var v0: vec3<f32>;
-	var v1: vec3<f32>;
-	var v2: vec3<f32>;
-	var v3: vec3<f32>;
-	var x0: vec3<f32>;
-	var x1: vec3<f32>;
-	var x2: vec3<f32>;
-	var x3: vec3<f32>;
-	
-	uvw = M * x;
-	i0 = floor(uvw);
-	f0 = uvw - i0;
-	gt_ = step(f0.xyx, f0.yzz);
-	lt_ = 1.0 - gt_;
-	gt = vec3<f32>(lt_.z, gt_.xy);
-	lt = vec3<f32>(lt_.xy, gt_.z);
-	o1 = min( gt, lt );
-	o2 = max( gt, lt );
-	i1 = i0 + o1;
-	i2 = i0 + o2;
-	i3 = i0 + vec3<f32>(1.0,1.0,1.0);
-	v0 = Mi * i0;
-	v1 = Mi * i1;
-	v2 = Mi * i2;
-	v3 = Mi * i3;
-	x0 = x - v0;
-	x1 = x - v1;
-	x2 = x - v2;
-	x3 = x - v3;
-	
-	var vx: vec4<f32>;
-	var vy: vec4<f32>;
-	var vz: vec4<f32>;
-
-	if(any(p > vec3<f32>(0.0))) {
-		vx = vec4<f32>(v0.x, v1.x, v2.x, v3.x);
-		vy = vec4<f32>(v0.y, v1.y, v2.y, v3.y);
-		vz = vec4<f32>(v0.z, v1.z, v2.z, v3.z);
-		if(p.x > 0.0) {
-			vx = vx - floor(vx / p.x) * p.x;
-		}
-		if(p.y > 0.0) {
-			vy = vy - floor(vy / p.y) * p.y;
-		}
-		if(p.z > 0.0) {
-			vz = vz - floor(vz / p.z) * p.z;
-		}
-		i0 = floor(M * vec3<f32>(vx.x, vy.x, vz.x) + 0.5);
-		i1 = floor(M * vec3<f32>(vx.y, vy.y, vz.y) + 0.5);
-		i2 = floor(M * vec3<f32>(vx.z, vy.z, vz.z) + 0.5);
-		i3 = floor(M * vec3<f32>(vx.w, vy.w, vz.w) + 0.5);
-	}
-	
-	var hash: vec4<f32>;
-	var theta: vec4<f32>;
-	var sz: vec4<f32>;
-	var psi: vec4<f32>;
-	var St: vec4<f32>;
-	var Ct: vec4<f32>;
-	var sz_: vec4<f32>;
-
-	hash = permute289v4f_psrn( permute289v4f_psrn( permute289v4f_psrn( 
-		vec4<f32>(i0.z, i1.z, i2.z, i3.z ))
-		+ vec4<f32>(i0.y, i1.y, i2.y, i3.y ))
-		+ vec4<f32>(i0.x, i1.x, i2.x, i3.x ));
-	theta = hash * 3.883222077;
-	sz = hash * -0.006920415 + 0.996539792;
-	psi = hash * 0.108705628;
-	Ct = cos(theta);
-	St = sin(theta);
-	sz_ = sqrt( 1.0 - sz*sz );
-
-	var gx: vec4<f32>;
-	var gy: vec4<f32>;
-	var gz: vec4<f32>;
-	var px: vec4<f32>;
-	var py: vec4<f32>;
-	var pz: vec4<f32>;
-	var Sp: vec4<f32>;
-	var Cp: vec4<f32>;
-	var Ctp: vec4<f32>;
-	var qx: vec4<f32>;
-	var qy: vec4<f32>;
-	var qz: vec4<f32>;
-	var Sa: vec4<f32>;
-	var Ca: vec4<f32>;
-
-	if(alpha != 0.0)
-	{
-		px = Ct * sz_;
-		py = St * sz_;
-		pz = sz;
-		Sp = sin(psi);
-		Cp = cos(psi);
-		Ctp = St*Sp - Ct*Cp;
-		qx = mix( Ctp*St, Sp, sz);
-		qy = mix(-Ctp*Ct, Cp, sz);
-		qz = -(py*Cp + px*Sp);
-		Sa = vec4<f32>(sin(alpha));
-		Ca = vec4<f32>(cos(alpha));
-		gx = Ca*px + Sa*qx;
-		gy = Ca*py + Sa*qy;
-		gz = Ca*pz + Sa*qz;
-	}
-	else
-	{
-		gx = Ct * sz_;
-		gy = St * sz_;
-		gz = sz;  
-	}
-	
-	var g0: vec3<f32>;
-	var g1: vec3<f32>;
-	var g2: vec3<f32>;
-	var g3: vec3<f32>;
-	var w: vec4<f32>;
-	var w2: vec4<f32>;
-	var w3: vec4<f32>;
-	var gdotx: vec4<f32>;
-	var n: f32;
-	
-	g0 = vec3<f32>(gx.x, gy.x, gz.x);
-	g1 = vec3<f32>(gx.y, gy.y, gz.y);
-	g2 = vec3<f32>(gx.z, gy.z, gz.z);
-	g3 = vec3<f32>(gx.w, gy.w, gz.w);
-	w = 0.5 - vec4<f32>(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3));
-	w = max(w, vec4<f32>(0.0, 0.0, 0.0, 0.0));
-	w2 = w * w;
-	w3 = w2 * w;
-	gdotx = vec4<f32>(dot(g0,x0), dot(g1,x1), dot(g2,x2), dot(g3,x3));
-	n = 39.5 * dot(w3, gdotx);
-
-	var dw: vec4<f32> = -6.0 * w2 * gdotx;
-	var dn0: vec3<f32> = w3.x * g0 + dw.x * x0;
-	var dn1: vec3<f32> = w3.y * g1 + dw.y * x1;
-	var dn2: vec3<f32> = w3.z * g2 + dw.z * x2;
-	var dn3: vec3<f32> = w3.w * g3 + dw.w * x3;
-	var g: vec3<f32> = 39.5 * (dn0 + dn1 + dn2 + dn3);
-	
-	return NG3(n, g);
-}
-
-fn psdnoise3(x: vec3<f32>, p: vec3<f32>) -> NG3
-{
-	let M = mat3x3<f32>(0.0, 1.0, 1.0, 1.0, 0.0, 1.0,  1.0, 1.0, 0.0);
-	let Mi = mat3x3<f32>(-0.5, 0.5, 0.5, 0.5,-0.5, 0.5, 0.5, 0.5,-0.5);
-
-	var uvw: vec3<f32>;
-	var i0: vec3<f32>;
-	var i1: vec3<f32>;
-	var i2: vec3<f32>;
-	var i3: vec3<f32>;
-	var f0: vec3<f32>;
-	var gt_: vec3<f32>;
-	var lt_: vec3<f32>;
-	var gt: vec3<f32>;
-	var lt: vec3<f32>;
-	var o1: vec3<f32>;
-	var o2: vec3<f32>;
-	var v0: vec3<f32>;
-	var v1: vec3<f32>;
-	var v2: vec3<f32>;
-	var v3: vec3<f32>;
-	var x0: vec3<f32>;
-	var x1: vec3<f32>;
-	var x2: vec3<f32>;
-	var x3: vec3<f32>;
-	
-	uvw = M * x;
-	i0 = floor(uvw);
-	f0 = uvw - i0;
-	gt_ = step(f0.xyx, f0.yzz);
-	lt_ = 1.0 - gt_;
-	gt = vec3<f32>(lt_.z, gt_.xy);
-	lt = vec3<f32>(lt_.xy, gt_.z);
-	o1 = min( gt, lt );
-	o2 = max( gt, lt );
-	i1 = i0 + o1;
-	i2 = i0 + o2;
-	i3 = i0 + vec3<f32>(1.0,1.0,1.0);
-	v0 = Mi * i0;
-	v1 = Mi * i1;
-	v2 = Mi * i2;
-	v3 = Mi * i3;
-	x0 = x - v0;
-	x1 = x - v1;
-	x2 = x - v2;
-	x3 = x - v3;
-	
-	var vx: vec4<f32>;
-	var vy: vec4<f32>;
-	var vz: vec4<f32>;
-
-	if(any(p > vec3<f32>(0.0))) {
-		vx = vec4<f32>(v0.x, v1.x, v2.x, v3.x);
-		vy = vec4<f32>(v0.y, v1.y, v2.y, v3.y);
-		vz = vec4<f32>(v0.z, v1.z, v2.z, v3.z);
-		if(p.x > 0.0) {
-			vx = vx - floor(vx / p.x) * p.x;
-		}
-		if(p.y > 0.0) {
-			vy = vy - floor(vy / p.y) * p.y;
-		}
-		if(p.z > 0.0) {
-			vz = vz - floor(vz / p.z) * p.z;
-		}
-		i0 = floor(M * vec3<f32>(vx.x, vy.x, vz.x) + 0.5);
-		i1 = floor(M * vec3<f32>(vx.y, vy.y, vz.y) + 0.5);
-		i2 = floor(M * vec3<f32>(vx.z, vy.z, vz.z) + 0.5);
-		i3 = floor(M * vec3<f32>(vx.w, vy.w, vz.w) + 0.5);
-	}
-	
-	var hash: vec4<f32>;
-	var theta: vec4<f32>;
-	var sz: vec4<f32>;
-	var psi: vec4<f32>;
-	var St: vec4<f32>;
-	var Ct: vec4<f32>;
-	var sz_: vec4<f32>;
-
-	hash = permute289v4f_psrn( permute289v4f_psrn( permute289v4f_psrn( 
-		vec4<f32>(i0.z, i1.z, i2.z, i3.z ))
-		+ vec4<f32>(i0.y, i1.y, i2.y, i3.y ))
-		+ vec4<f32>(i0.x, i1.x, i2.x, i3.x ));
-	theta = hash * 3.883222077;
-	sz = hash * -0.006920415 + 0.996539792;
-	psi = hash * 0.108705628;
-	Ct = cos(theta);
-	St = sin(theta);
-	sz_ = sqrt( 1.0 - sz*sz );
-
-	var gx: vec4<f32>;
-	var gy: vec4<f32>;
-	var gz: vec4<f32>;
-
-	gx = Ct * sz_;
-	gy = St * sz_;
-	gz = sz;  
-	
-	var g0: vec3<f32>;
-	var g1: vec3<f32>;
-	var g2: vec3<f32>;
-	var g3: vec3<f32>;
-	var w: vec4<f32>;
-	var w2: vec4<f32>;
-	var w3: vec4<f32>;
-	var gdotx: vec4<f32>;
-	var n: f32;
-	
-	g0 = vec3<f32>(gx.x, gy.x, gz.x);
-	g1 = vec3<f32>(gx.y, gy.y, gz.y);
-	g2 = vec3<f32>(gx.z, gy.z, gz.z);
-	g3 = vec3<f32>(gx.w, gy.w, gz.w);
-	w = 0.5 - vec4<f32>(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3));
-	w = max(w, vec4<f32>(0.0, 0.0, 0.0, 0.0));
-	w2 = w * w;
-	w3 = w2 * w;
-	gdotx = vec4<f32>(dot(g0,x0), dot(g1,x1), dot(g2,x2), dot(g3,x3));
-	n = 39.5 * dot(w3, gdotx);
-
-	var dw: vec4<f32> = -6.0 * w2 * gdotx;
-	var dn0: vec3<f32> = w3.x * g0 + dw.x * x0;
-	var dn1: vec3<f32> = w3.y * g1 + dw.y * x1;
-	var dn2: vec3<f32> = w3.z * g2 + dw.z * x2;
-	var dn3: vec3<f32> = w3.w * g3 + dw.w * x3;
-	var g: vec3<f32> = 39.5 * (dn0 + dn1 + dn2 + dn3);
-	
-	return NG3(n, g);
-}
-
-fn srdnoise3(x: vec3<f32>, alpha: f32) -> NG3
-{
-	let M = mat3x3<f32>(0.0, 1.0, 1.0, 1.0, 0.0, 1.0,  1.0, 1.0, 0.0);
-	let Mi = mat3x3<f32>(-0.5, 0.5, 0.5, 0.5,-0.5, 0.5, 0.5, 0.5,-0.5);
-
-	var uvw: vec3<f32>;
-	var i0: vec3<f32>;
-	var i1: vec3<f32>;
-	var i2: vec3<f32>;
-	var i3: vec3<f32>;
-	var f0: vec3<f32>;
-	var gt_: vec3<f32>;
-	var lt_: vec3<f32>;
-	var gt: vec3<f32>;
-	var lt: vec3<f32>;
-	var o1: vec3<f32>;
-	var o2: vec3<f32>;
-	var v0: vec3<f32>;
-	var v1: vec3<f32>;
-	var v2: vec3<f32>;
-	var v3: vec3<f32>;
-	var x0: vec3<f32>;
-	var x1: vec3<f32>;
-	var x2: vec3<f32>;
-	var x3: vec3<f32>;
-	
-	uvw = M * x;
-	i0 = floor(uvw);
-	f0 = uvw - i0;
-	gt_ = step(f0.xyx, f0.yzz);
-	lt_ = 1.0 - gt_;
-	gt = vec3<f32>(lt_.z, gt_.xy);
-	lt = vec3<f32>(lt_.xy, gt_.z);
-	o1 = min( gt, lt );
-	o2 = max( gt, lt );
-	i1 = i0 + o1;
-	i2 = i0 + o2;
-	i3 = i0 + vec3<f32>(1.0,1.0,1.0);
-	v0 = Mi * i0;
-	v1 = Mi * i1;
-	v2 = Mi * i2;
-	v3 = Mi * i3;
-	x0 = x - v0;
-	x1 = x - v1;
-	x2 = x - v2;
-	x3 = x - v3;
-		
-	var hash: vec4<f32>;
-	var theta: vec4<f32>;
-	var sz: vec4<f32>;
-	var psi: vec4<f32>;
-	var St: vec4<f32>;
-	var Ct: vec4<f32>;
-	var sz_: vec4<f32>;
-
-	hash = permute289v4f_psrn( permute289v4f_psrn( permute289v4f_psrn( 
-		vec4<f32>(i0.z, i1.z, i2.z, i3.z ))
-		+ vec4<f32>(i0.y, i1.y, i2.y, i3.y ))
-		+ vec4<f32>(i0.x, i1.x, i2.x, i3.x ));
-	theta = hash * 3.883222077;
-	sz = hash * -0.006920415 + 0.996539792;
-	psi = hash * 0.108705628;
-	Ct = cos(theta);
-	St = sin(theta);
-	sz_ = sqrt( 1.0 - sz*sz );
-
-	var gx: vec4<f32>;
-	var gy: vec4<f32>;
-	var gz: vec4<f32>;
-	var px: vec4<f32>;
-	var py: vec4<f32>;
-	var pz: vec4<f32>;
-	var Sp: vec4<f32>;
-	var Cp: vec4<f32>;
-	var Ctp: vec4<f32>;
-	var qx: vec4<f32>;
-	var qy: vec4<f32>;
-	var qz: vec4<f32>;
-	var Sa: vec4<f32>;
-	var Ca: vec4<f32>;
-
-	if(alpha != 0.0)
-	{
-		px = Ct * sz_;
-		py = St * sz_;
-		pz = sz;
-		Sp = sin(psi);
-		Cp = cos(psi);
-		Ctp = St*Sp - Ct*Cp;
-		qx = mix( Ctp*St, Sp, sz);
-		qy = mix(-Ctp*Ct, Cp, sz);
-		qz = -(py*Cp + px*Sp);
-		Sa = vec4<f32>(sin(alpha));
-		Ca = vec4<f32>(cos(alpha));
-		gx = Ca*px + Sa*qx;
-		gy = Ca*py + Sa*qy;
-		gz = Ca*pz + Sa*qz;
-	}
-	else
-	{
-		gx = Ct * sz_;
-		gy = St * sz_;
-		gz = sz;  
-	}
-	
-	var g0: vec3<f32>;
-	var g1: vec3<f32>;
-	var g2: vec3<f32>;
-	var g3: vec3<f32>;
-	var w: vec4<f32>;
-	var w2: vec4<f32>;
-	var w3: vec4<f32>;
-	var gdotx: vec4<f32>;
-	var n: f32;
-	
-	g0 = vec3<f32>(gx.x, gy.x, gz.x);
-	g1 = vec3<f32>(gx.y, gy.y, gz.y);
-	g2 = vec3<f32>(gx.z, gy.z, gz.z);
-	g3 = vec3<f32>(gx.w, gy.w, gz.w);
-	w = 0.5 - vec4<f32>(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3));
-	w = max(w, vec4<f32>(0.0, 0.0, 0.0, 0.0));
-	w2 = w * w;
-	w3 = w2 * w;
-	gdotx = vec4<f32>(dot(g0,x0), dot(g1,x1), dot(g2,x2), dot(g3,x3));
-	n = 39.5 * dot(w3, gdotx);
-
-	var dw: vec4<f32> = -6.0 * w2 * gdotx;
-	var dn0: vec3<f32> = w3.x * g0 + dw.x * x0;
-	var dn1: vec3<f32> = w3.y * g1 + dw.y * x1;
-	var dn2: vec3<f32> = w3.z * g2 + dw.z * x2;
-	var dn3: vec3<f32> = w3.w * g3 + dw.w * x3;
-	var g: vec3<f32> = 39.5 * (dn0 + dn1 + dn2 + dn3);
-	
-	return NG3(n, g);
-}
-
-fn sdnoise3(x: vec3<f32>) -> NG3
-{
-	let M = mat3x3<f32>(0.0, 1.0, 1.0, 1.0, 0.0, 1.0,  1.0, 1.0, 0.0);
-	let Mi = mat3x3<f32>(-0.5, 0.5, 0.5, 0.5,-0.5, 0.5, 0.5, 0.5,-0.5);
-
-	var uvw: vec3<f32>;
-	var i0: vec3<f32>;
-	var i1: vec3<f32>;
-	var i2: vec3<f32>;
-	var i3: vec3<f32>;
-	var f0: vec3<f32>;
-	var gt_: vec3<f32>;
-	var lt_: vec3<f32>;
-	var gt: vec3<f32>;
-	var lt: vec3<f32>;
-	var o1: vec3<f32>;
-	var o2: vec3<f32>;
-	var v0: vec3<f32>;
-	var v1: vec3<f32>;
-	var v2: vec3<f32>;
-	var v3: vec3<f32>;
-	var x0: vec3<f32>;
-	var x1: vec3<f32>;
-	var x2: vec3<f32>;
-	var x3: vec3<f32>;
-	
-	uvw = M * x;
-	i0 = floor(uvw);
-	f0 = uvw - i0;
-	gt_ = step(f0.xyx, f0.yzz);
-	lt_ = 1.0 - gt_;
-	gt = vec3<f32>(lt_.z, gt_.xy);
-	lt = vec3<f32>(lt_.xy, gt_.z);
-	o1 = min( gt, lt );
-	o2 = max( gt, lt );
-	i1 = i0 + o1;
-	i2 = i0 + o2;
-	i3 = i0 + vec3<f32>(1.0,1.0,1.0);
-	v0 = Mi * i0;
-	v1 = Mi * i1;
-	v2 = Mi * i2;
-	v3 = Mi * i3;
-	x0 = x - v0;
-	x1 = x - v1;
-	x2 = x - v2;
-	x3 = x - v3;
-
-	var hash: vec4<f32>;
-	var theta: vec4<f32>;
-	var sz: vec4<f32>;
-	var psi: vec4<f32>;
-	var St: vec4<f32>;
-	var Ct: vec4<f32>;
-	var sz_: vec4<f32>;
-
-	hash = permute289v4f_psrn( permute289v4f_psrn( permute289v4f_psrn( 
-		vec4<f32>(i0.z, i1.z, i2.z, i3.z ))
-		+ vec4<f32>(i0.y, i1.y, i2.y, i3.y ))
-		+ vec4<f32>(i0.x, i1.x, i2.x, i3.x ));
-	theta = hash * 3.883222077;
-	sz = hash * -0.006920415 + 0.996539792;
-	psi = hash * 0.108705628;
-	Ct = cos(theta);
-	St = sin(theta);
-	sz_ = sqrt( 1.0 - sz*sz );
-
-	var gx: vec4<f32>;
-	var gy: vec4<f32>;
-	var gz: vec4<f32>;
-
-	gx = Ct * sz_;
-	gy = St * sz_;
-	gz = sz;  
-	
-	var g0: vec3<f32>;
-	var g1: vec3<f32>;
-	var g2: vec3<f32>;
-	var g3: vec3<f32>;
-	var w: vec4<f32>;
-	var w2: vec4<f32>;
-	var w3: vec4<f32>;
-	var gdotx: vec4<f32>;
-	var n: f32;
-	
-	g0 = vec3<f32>(gx.x, gy.x, gz.x);
-	g1 = vec3<f32>(gx.y, gy.y, gz.y);
-	g2 = vec3<f32>(gx.z, gy.z, gz.z);
-	g3 = vec3<f32>(gx.w, gy.w, gz.w);
-	w = 0.5 - vec4<f32>(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3));
-	w = max(w, vec4<f32>(0.0, 0.0, 0.0, 0.0));
-	w2 = w * w;
-	w3 = w2 * w;
-	gdotx = vec4<f32>(dot(g0,x0), dot(g1,x1), dot(g2,x2), dot(g3,x3));
-	n = 39.5 * dot(w3, gdotx);
-
-	var dw: vec4<f32> = -6.0 * w2 * gdotx;
-	var dn0: vec3<f32> = w3.x * g0 + dw.x * x0;
-	var dn1: vec3<f32> = w3.y * g1 + dw.y * x1;
-	var dn2: vec3<f32> = w3.z * g2 + dw.z * x2;
-	var dn3: vec3<f32> = w3.w * g3 + dw.w * x3;
-	var g: vec3<f32> = 39.5 * (dn0 + dn1 + dn2 + dn3);
-	
-	return NG3(n, g);
-}
-
+import noise // I do some preprocessing to make this work
+import materials
 
 struct VertexInput {
     @location(0) pos: vec2f,
@@ -1197,26 +21,43 @@ fn vertexMain(input: VertexInput) ->
 
 // Ray marching constants
 
-const OCTAVES: i32 = 10; // {Octave count:0-11}
+
+
+var<storage,read_write> GpuState : array<f32>;
+
+var SceneColor: texture_2d<f32>;
+var SceneColorSampler: sampler;
+var SceneDepth: texture_2d<f32>;
+var SceneDepthSampler: sampler;
+
+const BLAST_STRUCT_FLOAT_COUNT: u32 = 5;
+
+
+
+const OCTAVES: i32 = 5; // {Octave count:0-12}
 const CAVE_SIZE: f32 = 50.0; // {Entry room size:0-250}
 const CAVE_THRESHOLD: f32 = 3.0;  // {How much to smooth the noise intersections:0-100}
-const MAX_STEPS: i32  = 40; // {Max raymarch steps:0-300}
+const MAX_STEPS: i32  = 200; // {Max raymarch steps:0-300}
 const NEAR_CLIP: f32 = 20.0; // {Near clipping distance: 0-1000}
-const SURF_DIST: f32 = 0.005; // {Surface min distance steps:0-1}
-const MAX_DIST: f32 = 300.0; // {Far clipping distance: 0-1000}
+const SURF_DIST: f32 = 0.01; // {Surface min distance steps:0-1}
+const FAR_CLIP: f32 = 600.0; // {Far clipping distance: 0-1000}
+const SHOW_GRID: i32 = 0; // {Whether to show the world grid SDF: 0-1}
+
+const NOISE_CLIP_MIN: f32 = -0.3; // {Far clipping distance: 0-1}
+const NOISE_CLIP_MAX: f32 = 0.7; // {Far clipping distance: 0-5}
 
 const PI: f32 = 3.141592653592;
 const TAU: f32 = 6.283185307185;
 const DUST_RADIUS: f32 = 0.1; // {Dust radii:0-1}
 const NOISE_CHOICE: f32 = 3.0; // {Choise of noise algorithm:1-3}
-const NOISE_OFFSET: f32 = 0.0001; // {Softening of noise: 0-1}
+const NOISE_OFFSET: f32 = 0.0001; // {Softening of noise: -100-100}
 const MAX_DEPTH: f32 = 300.0; // {Dust radii:100-1500}
 const SEA_LEVEL: f32 = 25.; // {The Z in the world where the sea surface is}
-// allow dynamic C.OCTAVES
+// allow dynamic uniforms.OCTAVES
 
 const MAX_OCTAVES: i32 = 5;
 const MIN_OCTAVES: i32 = 1;
-const OCTAVES_FALLOFF_DISTANCE: f32 = C.MAX_DIST;
+const OCTAVES_FALLOFF_DISTANCE: f32 = uniforms.FAR_CLIP;
 
 // WGSL adaptation of K.jpg's Re-oriented 8-Point BCC Noise (OpenSimplex2S)
 // Output: vec4<f32>(dF/dx, dF/dy, dF/dz, value)
@@ -1314,7 +155,7 @@ fn DistributionGGX(N: vec3f, H: vec3f, roughness: f32) -> f32 {
     let NdotH2 = NdotH*NdotH;
     let num   = a2;
     var denom = (NdotH2 * (a2 - 1.0) + 1.0);
-    denom = C.PI * denom * denom;
+    denom = uniforms.PI * denom * denom;
     return num / denom;
 }
 
@@ -1483,23 +324,38 @@ fn sdSphere(p: vec3f, c: vec3f, r: f32) -> f32
     return length(p-c) - r;
 }
 
-fn sdRoundBox( po: vec3f, c: vec3f, b: vec3f, r: f32 ) -> f32
-{
-    let p = po - c;
-    let q = abs(p) - b;
-    return length(max(q,vec3f(0.0))) + min(max(q.x,max(q.y,q.z)),0.0) - r;
+fn sdRoundBox(p: vec3f, b: vec3f, r: f32) -> f32 {
+  let q = abs(p) - b;
+  return length(max(q, vec3f(0.))) + min(max(q.x,max(q.y, q.z)), 0.) - r;
 }
 
+fn sdBoxFrame(p: vec3f, b: vec3f, e: f32) -> f32 {
+  let q = abs(p) - b;
+  let w = abs(q + e) - e;
+  return min(min(
+      length(max(vec3f(q.x, w.y, w.z), vec3f(0.))) + min(max(q.x, max(w.y, w.z)), 0.),
+      length(max(vec3f(w.x, q.y, w.z), vec3f(0.))) + min(max(w.x, max(q.y, w.z)), 0.)),
+      length(max(vec3f(w.x, w.y, q.z), vec3f(0.))) + min(max(w.x, max(w.y, q.z)), 0.));
+}
+
+fn repeat(p: vec3f, c: vec3f) -> vec3f {
+  return fract(p / c) * c - 0.5 * c;
+}
+
+fn infiniteGrid(p: vec3f, cellSize: vec3f, boxSize: vec3f, thickness: f32) -> f32 {
+  let rp = repeat(p, cellSize);
+  return sdBoxFrame(rp, boxSize, thickness);
+}
 
 ////////////////////////////////////////////////////////////////
 // Main scene
 ////////////////////////////////////////////////////////////////
 
 fn orbitControls(po: vec3f) -> vec3f {
-    let m = (vec2f(C.mouse.x, C.mouse.y) / C.resolution) + 0.5;
+    let m = (vec2f(uniforms.mouse.x, uniforms.mouse.y) / uniforms.resolution) + 0.5;
     var p = po;
-    p = rotY(po, -m.x*C.TAU);
-    p = rotX(p, -m.y*C.PI);
+    p = rotY(po, -m.x*uniforms.TAU);
+    p = rotX(p, -m.y*uniforms.PI);
     return p;
 }
 
@@ -1626,7 +482,7 @@ fn fBm(p: vec3f) -> f32 {
     var amplitude: f32 = 0.9;
     var frequency: f32 = 0.5;
     
-    for (var i: i32 = 0; i < C.OCTAVES; i++) {
+    for (var i: i32 = 0; i < uniforms.OCTAVES; i++) {
         value += (f32(i) * 0.001) + (amplitude * snoise3D(p * frequency));
         frequency *= (f32(i) * 0.05) + 2.0;
         amplitude *= (f32(i) * 0.05) + 0.5;
@@ -1657,7 +513,7 @@ fn drawSnake(
     var returnable = originalValue;
     var i: i32 = 0;
     let loopPeriod = 3.0;
-    let timeModulus = fract(C.time / loopPeriod);
+    let timeModulus = fract(uniforms.time / loopPeriod);
 
     // Calculate wriggle speed based on global positional speed
     let wriggleSpeed = speed * 1.0; // Wriggle frequency scaled with speed
@@ -1668,7 +524,7 @@ fn drawSnake(
         let wrigglePhase = -2.0 * 3.14159265 * (wriggleSpeed * timeModulus + f32(i) * 0.3);
         let wriggleFactor = sin(wrigglePhase) * wriggleAmplitude;
         
-        let movementVector = direction * (speed * C.time - (length / f32(segmentCount) * f32(i)));
+        let movementVector = direction * (speed * uniforms.time - (length / f32(segmentCount) * f32(i)));
         let segmentX = startPos.x + wriggleFactor + movementVector.x;
         let segmentY = startPos.y + wriggleFactor + movementVector.y;
         let segmentZ = startPos.z + movementVector.z;
@@ -1696,7 +552,7 @@ fn vec3noise(choice: u32, p: vec3f, offset: f32) -> f32 {
         return openSimplex2SDerivatives_ImproveXY(p);
     }
     case 3: {
-        return snoise3offset(p, max(C.NOISE_OFFSET, offset));
+        return snoise3offset(p, max(uniforms.NOISE_OFFSET, offset));
     }
     default: {
     }
@@ -1710,7 +566,7 @@ fn customNoise3D(p: vec3f, amplitude: f32, scale: f32, octaves: i32, offset: f32
     var currentScale: f32 = scale;
 
     for (var i: i32 = 0; i < octaves; i++) {
-        value += currentAmplitude * vec3noise(u32(floor(C.NOISE_CHOICE)), p * currentScale, offset);
+        value += currentAmplitude * vec3noise(u32(floor(uniforms.NOISE_CHOICE)), p * currentScale, offset);
         currentScale *= 2.0;   // Increasing frequency
         currentAmplitude *= 0.5; // Decreasing amplitude
     }
@@ -1739,9 +595,125 @@ fn sdSphereNew(p: vec3<f32>, radius: f32) -> f32 {
     return length(p) - radius;
 }
 
+// fn sdBezier(p: vec3<f32>, A: vec3<f32>, B: vec3<f32>, C: vec3<f32>, thickness: f32) -> vec2<f32> {
+//     let a = B - A;
+//     let b = A - 2.0 * B + C;
+//     let c = a * 2.0;
+//     let d = A - p;
+//     let kk = 1.0 / dot(b, b);
+//     let kx = kk * dot(a, b);
+//     let ky = kk * (2.0 * dot(a, a) + dot(d, b)) / 3.0;
+//     let kz = kk * dot(d, a);
+
+//     let p1 = ky - kx * kx;
+//     let p3 = p1 * p1 * p1;
+//     let q = kx * (2.0 * kx * kx - 3.0 * ky) + kz;
+//     var h: f32 = q * q + 4.0 * p3;
+
+//     var res: vec2<f32>;
+//     if (h >= 0.0) {
+//         h = sqrt(h);
+//         let x = (vec2<f32>(h, -h) - q) / 2.0;
+//         let uv = sign(x) * pow(abs(x), vec2<f32>(1.0 / 3.0));
+//         let t = clamp(uv.x + uv.y - kx, 0.0, 1.0);
+//         let f = d + (c + b * t) * t;
+//         res = vec2<f32>(dot(f, f), t);
+//     } else {
+//         let z = sqrt(-p1);
+//         let v = acos(q / (p1 * z * 2.0)) / 3.0;
+//         let m = cos(v);
+//         let n = sin(v) * 1.732050808;
+//         let t = clamp(vec2<f32>(m + m, -n - m) * z - kx, vec2<f32>(0.0), vec2<f32>(1.0));
+//         let f = d + (c + b * t.x) * t.x;
+//         var dis: f32 = dot(f, f);
+//         res = vec2<f32>(dis, t.x);
+
+//         let g = d + (c + b * t.y) * t.y;
+//         dis = dot(g, g);
+//         res = select(res, vec2<f32>(dis, t.y), dis < res.x);
+//     }
+//     res.x = sqrt(res.x) - thickness; // Subtract the thickness to control the "tube" radius
+//     return res;
+// }
+
+
+fn iSegment(ro: vec3<f32>, rd: vec3<f32>, a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
+    let ba = b - a;
+    let oa = ro - a;
+    
+    let oad = dot(oa, rd);
+    let dba = dot(rd, ba);
+    let baba = dot(ba, ba);
+    let oaba = dot(oa, ba);
+    
+    var th = vec2<f32>(-oad * baba + dba * oaba, oaba - oad * dba) / (baba - dba * dba);
+    
+    th.x = max(th.x, 0.0);
+    th.y = clamp(th.y, 0.0, 1.0);
+    
+    let p = a + ba * th.y;
+    let q = ro + rd * th.x;
+    
+    return vec3<f32>(th, length(p - q) * length(p - q));
+}
+
+
+fn iBezier(ro: vec3<f32>, rd: vec3<f32>, p0: vec3<f32>, p1: vec3<f32>, p2: vec3<f32>, p3: vec3<f32>, width: f32) -> f32 {
+    let kNum = 50;
+    
+    var hit: f32 = -1.0;
+    var res: f32 = 1e10;
+    var a = p0;
+    for (var i = 1; i < kNum; i = i + 1) {
+        let t = f32(i) / f32(kNum - 1);
+        let s = 1.0 - t;
+        let b = p0 * s * s * s + p1 * 3.0 * s * s * t + p2 * 3.0 * s * t * t + p3 * t * t * t;
+        let r = iSegment(ro, rd, a, b);
+        if (r.z < width * width) {
+            res = min(res, r.x);
+            hit = 1.0;
+        }
+        a = b;
+    }
+    
+    return res * hit;
+}
+
+fn det(a: vec2<f32>, b: vec2<f32>) -> f32 {
+    return a.x * b.y - a.y * b.x;
+}
+
+fn sdBezier(p: vec3<f32>, va: vec3<f32>, vb: vec3<f32>, vc: vec3<f32>) -> vec2<f32> {
+    let w = normalize(cross(vc - vb, va - vb));
+    let u = normalize(vc - vb);
+    let v = cross(w, u);
+
+    let m = vec2<f32>(dot(va - vb, u), dot(va - vb, v));
+    let n = vec2<f32>(dot(vc - vb, u), dot(vc - vb, v));
+    let q = vec3<f32>(dot(p - vb, u), dot(p - vb, v), dot(p - vb, w));
+
+    let mq = det(m, q.xy);
+    let nq = det(n, q.xy);
+    let mn = det(m, n);
+    let k1 = mq + nq;
+
+    let g = (k1 + mn) * n + (k1 - mn) * m;
+    let f = -(mn * mn + 2.0 * mn * (nq - mq)) - k1 * k1;
+    let z = 0.5 * f * vec2<f32>(g.y, -g.x) / dot(g, g);
+    let t = clamp(0.5 + 0.5 * (det(z, m + n) + k1) / mn, 0.0, 1.0);
+
+    let cp = m * (1.0 - t) * (1.0 - t) + n * t * t - q.xy;
+    return vec2<f32>(sqrt(dot(cp, cp) + q.z * q.z), t);
+}
+
+fn sdBox(p: vec3f, b: vec3f) -> f32 {
+  let q = abs(p) - b;
+  return length(max(q, vec3f(0.))) + min(max(q.x, max(q.y, q.z)), 0.);
+}
+
 ////////////////////////////////////////////////////////////////
 
-fn mainScene(p: vec3f) -> f32 {
+fn getDist(p: vec3f, ro: vec3f, rd: vec3f, uv: vec2f) -> f32 {
 	 // Define the clipping plane at y = 0
     let planeNormal = vec3f(0.0, 1.0, 0.0);
     let planeHeight = 0.0; // Clipping exactly at y = 0
@@ -1753,7 +725,7 @@ fn mainScene(p: vec3f) -> f32 {
     // if (planeDistance < 0.0) {
     //     return planeDistance;
     // }
-  let octaveCount = C.OCTAVES;
+  let octaveCount = uniforms.OCTAVES;
    /**
    EXPERIMENT: TWIST
 //    */
@@ -1764,86 +736,507 @@ fn mainScene(p: vec3f) -> f32 {
 // 	var m: mat2x2<f32> = mat2x2<f32>(c, -s, s, c);
 // 	var q: vec3<f32> = vec3<f32>(m * p.xz, p.y);
 
-
 	// END EXPERIMENT
-    let largerScaleNoise = customNoise3D(p, 6.0, 0.01, C.OCTAVES , C.NOISE_OFFSET);
-    let solidVolumeSDF = sdSphere(p, vec3f(0.0), C.CAVE_SIZE);
-    let caveSDF = opSmoothSubtraction(-largerScaleNoise, solidVolumeSDF, 50);
-	// Define the clipping plane
-    // Plane normal pointing up (0, 1, 0) for y = 0 plane
-   
+	 //let perturbedP = p * customNoise3D(p * 0.001, 6.0, 0.1, 3, uniforms.NOISE_OFFSET) * 1; // Adjust scale and strength as need
+
+
+
+
 	
-     // Return the result of the combined SDFs
-    return opSmoothSubtraction(caveSDF, planeDistance, 10);
+
+
+    var largerScaleNoise = customNoise3D( p, 6.0, 0.01, uniforms.OCTAVES , uniforms.NOISE_OFFSET);
+	
+	
+    let solidVolumeSDF = sdSphere(p, vec3f(0.0), uniforms.CAVE_SIZE);
+	
+    var caveSDF = opSmoothSubtraction(largerScaleNoise, solidVolumeSDF, 50);
+
+	
+	
+    caveSDF = opSmoothSubtraction(caveSDF, planeDistance, 10);
+// let p0 = vec3<f32>(0.8, 0.6, 0.8) * sin(uniforms.time * 0.7 + vec3<f32>(3.0, 1.0, 2.0));
+//     let p1 = vec3<f32>(-10) * sin(uniforms.time * 1.1 + vec3<f32>(0.0, 6.0, 1.0));
+//     let p2 = vec3<f32>(16) * sin(uniforms.time * 1.3 + vec3<f32>(4.0, 2.0, 3.0));
+//     let p3 = vec3<f32>(24) * sin(uniforms.time * 1.5 + vec3<f32>(1.0, 5.0, 4.0));
+//     let thickness = 0.50;
+
+    // Raytrace quadratic Bezier curve with thickness
+    // let sdfResult = sdfBezierApprox(p, p0, p1, p2, p3,thickness);
+	// caveSDF = opUnion( caveSDF, sdfResult);
+
+
+	// let sdfResult = sdfDerived(p, 100.0);
+	// caveSDF = opUnion( caveSDF, sdfResult);
+
+
+	// ENABLE GRID
+	//let lines = infiniteGrid(p, vec3f(10.),vec3f(10.),1.);
+
+
+	//let sphere = sdRoundBox(p, vec3f(1.0), 1.0);
+
+	// add BLASTS
+	
+
+	
+
+    for (var i = 0u; i < uniforms.blast_zones_count * uniforms.BLAST_STRUCT_FLOAT_COUNT; i = i + uniforms.BLAST_STRUCT_FLOAT_COUNT) {
+        // Example usage of the iteration counter
+		
+        let zone = BlastZone( vec3f(uniforms.blast_zones[i], uniforms.blast_zones[i+1], uniforms.blast_zones[i+2]), uniforms.blast_zones[i+3], uniforms.blast_zones[i+4]);
+        if (zone.radius > -0.5){
+			if (zone.softness > 0.99){
+				caveSDF = opSmoothSubtraction(caveSDF, sdSphere(p, zone.position, zone.radius), zone.softness );
+			} else {
+				caveSDF = opSubtraction(caveSDF, sdSphere(p, zone.position, zone.radius));
+			}
+			
+		}
+		
+        // Do something with temp, position, radius, etc.
+    }
+
+
+	if (uniforms.SHOW_GRID == 0){
+ 		return caveSDF;
+	} else {
+		let lines = sdBoxFrame(repeat(p, vec3f(50.)), vec3f(25.), 0.05);
+		return min(lines, caveSDF);
+	}
+
+	
 }
 
-
-
-
-
-fn getDist(p: vec3f) -> f32 {
-    return mainScene(p); // Retrieve the scene's SDF
+fn gridLines(uv: vec2f, width: f32, spacing: f32) -> f32 {
+    let gS = 1000.;
+    let lines = mix(0.75, 1.0, min(step(width, fract(uv.x/spacing + width / 2.0)), step(width, fract(uv.y/spacing + width / 2.0))));
+    return lines;
 }
 
-fn getNormal(p: vec3f) -> vec3f {
+fn dot2(v: vec3<f32>) -> f32 {
+    return dot(v, v);
+}
+
+fn RotMat(axis: vec3<f32>, angle: f32) -> mat3x3<f32> {
+    // Normalize the axis
+    let n_axis = normalize(axis);
+    let s = sin(angle);
+    let c = cos(angle);
+    let oc = 1.0 - c;
+    
+    return mat3x3<f32>(
+        vec3<f32>(oc * n_axis.x * n_axis.x + c,        oc * n_axis.x * n_axis.y - n_axis.z * s,  oc * n_axis.z * n_axis.x + n_axis.y * s),
+        vec3<f32>(oc * n_axis.x * n_axis.y + n_axis.z * s,  oc * n_axis.y * n_axis.y + c,        oc * n_axis.y * n_axis.z - n_axis.x * s),
+        vec3<f32>(oc * n_axis.z * n_axis.x - n_axis.y * s,  oc * n_axis.y * n_axis.z + n_axis.x * s,  oc * n_axis.z * n_axis.z + c)
+    );
+}
+
+// fn sdBezier(pos: vec3<f32>, A: vec3<f32>, B: vec3<f32>, C: vec3<f32>) -> f32 {    
+//     let a = B - A;
+//     let b = A - 2.0 * B + C;
+//     let c = a * 2.0;
+//     let d = A - pos;
+//     let kk = 1.0 / dot(b, b);
+//     let kx = kk * dot(a, b);
+//     let ky = kk * (2.0 * dot(a, a) + dot(d, b)) / 3.0;
+//     let kz = kk * dot(d, a);      
+//     var res: f32 = 0.0;
+//     let p = ky - kx * kx;
+//     let p3 = p * p * p;
+//     let q = kx * (2.0 * kx * kx - 3.0 * ky) + kz;
+//     var h = q * q + 4.0 * p3;
+//     if (h >= 0.0) { 
+//         h = sqrt(h);
+//         let x = (vec3<f32>(h, -h, h) - q) / 2.0;
+//         let uv = sign(x) * pow(abs(x), vec3<f32>(1.0 / 3.0));
+//         let t = clamp(uv.x + uv.y - kx, 0.0, 1.0);
+//         res = dot2(d + (c + b * t) * t);
+//     } else {
+//         let z = sqrt(-p);
+//         let v = acos(q / (p * z * 2.0)) / 3.0;
+//         let m = cos(v);
+//         let n = sin(v) * 1.732050808;
+//         let t = clamp(vec3<f32>(m + m, -n - m, n - m) * z - kx, vec3<f32>(0.0), vec3<f32>(1.0));
+//         res = min(
+//             dot2(d + (c + b * t.x) * t.x),
+//             dot2(d + (c + b * t.y) * t.y)
+//         );
+//     }
+//     return sqrt(res);
+// }
+
+
+fn getNormal(p: vec3f,  ro: vec3f, rd: vec3f, uv: vec2f) -> vec3f {
     let epsilon = 0.0001;
+
     let dx = vec3(epsilon, 0., 0.0);
     let dy = vec3(0., epsilon, 0.0);
     let dz = vec3(0., 0.0, epsilon);
 
-    let ddx = getDist(p + dx) - getDist(p - dx);
-    let ddy = getDist(p + dy) - getDist(p - dy);
-    let ddz = getDist(p + dz) - getDist(p - dz);
-    
+    let ddx = getDist(p + dx, ro, rd, uv) - getDist(p - dx, ro, rd, uv);
+    let ddy = getDist(p + dy, ro, rd, uv) - getDist(p - dy, ro, rd, uv);
+    let ddz = getDist(p + dz, ro, rd, uv) - getDist(p - dz, ro, rd, uv);
+
     return normalize(vec3f(ddx, ddy, ddz));
 }
 
-// COORDINATE SYSTEM: X = [-1,+1] (Right pos) | Y = [-1,+1] (Down pos.)  
 
-////////////////////////////////////////////////////////////////
-// Ray Marching Functions
-////////////////////////////////////////////////////////////////
 
-fn rayDirection(p: vec2f, ro: vec3f, rt: vec3f, up: vec3f, yaw: f32, pitch: f32, fov: f32, aspectRatio: f32) -> vec3f {
-    let cosPitch = cos(pitch);
-    let sinPitch = sin(pitch);
-    let cosYaw = cos(yaw);
-    let sinYaw = sin(yaw);
+fn lerp(a: vec3<f32>, b: vec3<f32>, t: f32) -> vec3<f32> {
+    return a * (1.0 - t) + b * t;
+}
 
-    // Forward direction vector based on yaw and pitch (Euler angles)
-    let forward = vec3f(cosPitch * sinYaw, sinPitch, cosPitch * cosYaw);
+fn bezier3(p0: vec3<f32>, p1: vec3<f32>, p2: vec3<f32>, p3: vec3<f32>, t: f32) -> vec3<f32> {
+    let s = 1.0 - t;
+    return p0 * s * s * s + p1 * 3.0 * s * s * t + p2 * 3.0 * s * t * t + p3 * t * t * t;
+}
 
-    // Right vector perpendicular to 'forward' and 'up'
-    let right = normalize(cross(up, forward));
+fn segmentDistance(a: vec3<f32>, b: vec3<f32>, p: vec3<f32>) -> f32 {
+    let ab = b - a;
+    let ap = p - a;
+    let t = clamp(dot(ap, ab) / dot(ab, ab), 0.0, 1.0);
+    let closest = a + t * ab;
+    return length(p - closest);
+}
 
-    // Adjust 'up' vector to be perpendicular to 'forward' and 'right'
-    let adjustedUp = cross(forward, right);
-
-    // Calculate normalized device coordinates (NDC) offset for field of view
-    let fovTan = tan(fov / 2.0);
-    let ndcX = p.x * fovTan * aspectRatio;
-    let ndcY = p.y * fovTan;
-
-    // Calculate the final ray direction
-    return normalize(forward + ndcX * right + ndcY * adjustedUp);
+fn sdCapsule(p: vec3<f32>, a: vec3<f32>, b: vec3<f32>, r: f32) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let baDotBa = dot(ba, ba);
+    let h = clamp(dot(pa, ba) / baDotBa, 0.0, 1.0);
+    let projection = ba * h;
+    return length(pa - projection) - r;
 }
 
 
 
+// Function to perform bilinear interpolation on texture fetch
+fn bilinearInterpolate(tex: texture_2d<f32>, sampler: sampler, uv: vec2<f32>) -> f32 {
+    let texSize = vec2<f32>(textureDimensions(tex, 0));
+    let uvScaled = uv * texSize - vec2<f32>(0.5);
+    let uvFloor = floor(uvScaled);
+    let uvFrac = fract(uvScaled);
+    
+    let p00 = textureSample(tex, sampler, (uvFloor + vec2<f32>(0.0, 0.0)) / texSize).r;
+    let p10 = textureSample(tex, sampler, (uvFloor + vec2<f32>(1.0, 0.0)) / texSize).r;
+    let p01 = textureSample(tex, sampler, (uvFloor + vec2<f32>(0.0, 1.0)) / texSize).r;
+    let p11 = textureSample(tex, sampler, (uvFloor + vec2<f32>(1.0, 1.0)) / texSize).r;
 
-fn rayMarch(ro: vec3f, rd: vec3f) -> f32 {
-    var d = C.NEAR_CLIP;
-    var i: i32 = 0;
-    loop {
-        if i >= C.MAX_STEPS { break; }
-        let p = ro + rd * d;
-        let ds = getDist(p);
-        d += ds;
-        if d >= C.MAX_DIST || ds < C.SURF_DIST { break; }
-        i++;
+    let p0 = mix(p00, p10, uvFrac.x);
+    let p1 = mix(p01, p11, uvFrac.x);
+    return mix(p0, p1, uvFrac.y);
+}
+
+// fn sdfDerived(point: vec3<f32>, size: f32) -> f32 {
+//     // Calculate bounding box min and max
+//     let halfSize = size / 2.0;
+//     let bboxMin = vec3<f32>(-halfSize, -halfSize, -halfSize);
+//     let bboxMax = vec3<f32>(halfSize, halfSize, halfSize);
+
+//     // Check if the point is inside the bounding box
+//     let isInsideX = (point.x >= bboxMin.x) && (point.x <= bboxMax.x);
+//     let isInsideY = (point.y >= bboxMin.y) && (point.y <= bboxMax.y);
+//     let isInsideZ = (point.z >= bboxMin.z) && (point.z <= bboxMax.z);
+
+//     if isInsideX && isInsideY && isInsideZ {
+//         // Normalize the point coordinates to [0, 1] based on bounding box dimensions
+//         let nx = (point.x - bboxMin.x) / size;
+//         let ny = (point.y - bboxMin.y) / size;
+//         let nz = (point.z - bboxMin.z) / size;
+
+//         // Calculate UV coordinates for each depth map
+//         let uvXPos =  vec2<f32>(nx, 1.0 - ny);        // FRONT
+//         let uvXNeg =   vec2<f32>(nx, ny);// BACK (flipped y)
+//         let uvYPos =  vec2<f32>(1.0 - ny, nz); // RIGHT (flipped x)
+//         let uvYNeg =  vec2<f32>(ny, nz);         // LEFT
+//         let uvZPos =  vec2<f32>(nz, 1.0 - nx);   // TOP (flipped y)
+//         let uvZNeg =     vec2<f32>(nz, nx);      // BOTTOM
+
+//         // Retrieve interpolated depth values from the depth maps
+//         let depthXPos = bilinearInterpolate(LEFT, LEFT_sampler, uvYNeg);
+//         let depthXNeg = bilinearInterpolate(RIGHT, RIGHT_sampler, uvYPos);
+//         let depthYPos = bilinearInterpolate(TOP, TOP_sampler, uvZPos);
+//         let depthYNeg = bilinearInterpolate(BOTTOM, BOTTOM_sampler, uvZNeg);
+//         let depthZPos = bilinearInterpolate(FRONT, FRONT_sampler, uvXPos);
+//         let depthZNeg = bilinearInterpolate(BACK, BACK_sampler, uvXNeg);
+
+//         // Convert normalized depths to world coordinates
+//         let wxPos = bboxMin.x + depthXPos * size;
+//         let wxNeg = bboxMin.x + (1.0 - depthXNeg) * size;
+//         let wyPos = bboxMin.y + depthYPos * size;
+//         let wyNeg = bboxMin.y + (1.0 - depthYNeg) * size;
+//         let wzPos = bboxMin.z + depthZPos * size;
+//         let wzNeg = bboxMin.z + (1.0 - depthZNeg) * size;
+
+//         // Calculate distances to the surfaces
+//         let distXPos = abs(point.x - wxPos);
+//         let distXNeg = abs(point.x - wxNeg);
+//         let distYPos = abs(point.y - wyPos);
+//         let distYNeg = abs(point.y - wyNeg);
+//         let distZPos = abs(point.z - wzPos);
+//         let distZNeg = abs(point.z - wzNeg);
+
+//         // Determine if the point is inside the object
+//         let insideX = (point.x >= wxNeg) && (point.x <= wxPos); 
+//         let insideY = (point.y >= wyNeg) && (point.y <= wyPos); 
+//         let insideZ = (point.z >= wzNeg) && (point.z <= wzPos); 
+//         let inside = insideX && insideY && insideZ;
+
+//         // Combine distances to form SDF value
+//         var sdf = min(min(distXPos, distXNeg), min(min(distYPos, distYNeg), min(distZPos, distZNeg)));
+
+//         // If the point is inside the object, make the SDF negative
+//         if inside {
+//             sdf = -sdf;
+//         }
+
+//         return sdf;
+//     } else {
+//         // Calculate distances to the bounding box faces
+//         let dx = max(0.0, max(bboxMin.x - point.x, point.x - bboxMax.x));
+//         let dy = max(0.0, max(bboxMin.y - point.y, point.y - bboxMax.y));
+//         let dz = max(0.0, max(bboxMin.z - point.z, point.z - bboxMax.z));
+
+//         // Compute the nearest point on the bounding box
+//         let closestPoint = vec3<f32>(
+//             clamp(point.x, bboxMin.x, bboxMax.x),
+//             clamp(point.y, bboxMin.y, bboxMax.y),
+//             clamp(point.z, bboxMin.z, bboxMax.z)
+//         );
+
+//         // Compute the Euclidean distance from the point to the closest point on the bounding box
+//         let distToBox = length(point - closestPoint);
+
+//         // Normalize the closest point coordinates to [0, 1] based on bounding box dimensions
+//         let nClosestX = (closestPoint.x - bboxMin.x) / size;
+//         let nClosestY = (closestPoint.y - bboxMin.y) / size;
+//         let nClosestZ = (closestPoint.z - bboxMin.z) / size;
+
+//         // Calculate UV coordinates for each depth map for the closest point
+//         let uvClosestXPos = vec2<f32>(nClosestY, nClosestZ);
+//         let uvClosestXNeg = vec2<f32>(1.0 - nClosestY, nClosestZ);  // Flip y-coordinate for BACK
+//         let uvClosestYPos = vec2<f32>(nClosestZ, 1.0 - nClosestX);  // Flip x-coordinate for RIGHT
+//         let uvClosestYNeg = vec2<f32>(nClosestZ, nClosestX);
+//         let uvClosestZPos = vec2<f32>(nClosestX, 1.0 - nClosestY);  // Flip y-coordinate for TOP
+//         let uvClosestZNeg = vec2<f32>(nClosestX, nClosestY);
+
+
+//         // Retrieve interpolated depth values from the depth maps for the closest point
+//         let depthClosestXPos = bilinearInterpolate(FRONT, FRONT_sampler, uvClosestXPos);
+//         let depthClosestXNeg = bilinearInterpolate(BACK, BACK_sampler, uvClosestXNeg);
+//         let depthClosestYPos = bilinearInterpolate(RIGHT, RIGHT_sampler, uvClosestYPos);
+//         let depthClosestYNeg = bilinearInterpolate(LEFT, LEFT_sampler, uvClosestYNeg);
+//         let depthClosestZPos = bilinearInterpolate(TOP, TOP_sampler, uvClosestZPos);
+//         let depthClosestZNeg = bilinearInterpolate(BOTTOM, BOTTOM_sampler, uvClosestZNeg);
+
+//         // Convert normalized depths to world coordinates for the closest point
+//         let wxPosClosest = bboxMin.x + depthClosestXPos * size;
+//         let wxNegClosest = bboxMin.x + (1.0 - depthClosestXNeg) * size;
+//         let wyPosClosest = bboxMin.y + depthClosestYPos * size;
+//         let wyNegClosest = bboxMin.y + (1.0 - depthClosestYNeg) * size;
+//         let wzPosClosest = bboxMin.z + depthClosestZPos * size;
+//         let wzNegClosest = bboxMin.z + (1.0 - depthClosestZNeg) * size;
+
+//         // Calculate distances to the surfaces from the closest point
+//         let distClosestXPos = abs(closestPoint.x - wxPosClosest);
+//         let distClosestXNeg = abs(closestPoint.x - wxNegClosest);
+//         let distClosestYPos = abs(closestPoint.y - wyPosClosest);
+//         let distClosestYNeg = abs(closestPoint.y - wyNegClosest);
+//         let distClosestZPos = abs(closestPoint.z - wzPosClosest);
+//         let distClosestZNeg = abs(closestPoint.z - wzNegClosest);
+
+//         // Combine distances to form internal distance value for the closest point
+//         var sdfClosest = min(min(distClosestXPos, distClosestXNeg), min(min(distClosestYPos, distClosestYNeg), min(distClosestZPos, distClosestZNeg)));
+
+//         // Combine the external distance with the internal SDF value
+//         return distToBox + sdfClosest;
+//     }
+// }
+
+// fn sdAblatePlane(point: vec3<f32>, size: f32, depthMap: texture_2d<f32>, sampler: sampler, axis: i32, rayDir: vec3<f32>) -> f32 {
+//     // Calculate bounding box min and max
+//     let halfSize = size / 2.0;
+//     let bboxMin = vec3<f32>(-halfSize, -halfSize, -halfSize);
+//     let bboxMax = vec3<f32>(halfSize, halfSize, halfSize);
+
+//     // Normalize the point coordinates to [0, 1] based on bounding box dimensions
+//     let nx = (point.x - bboxMin.x) / size;
+//     let ny = (point.y - bboxMin.y) / size;
+//     let nz = (point.z - bboxMin.z) / size;
+
+//     // Calculate UV coordinates for the depth map
+//     var uv = vec2<f32>(0.0, 0.0);
+//     var worldDepth = 0.0;
+//     var axisNormal = vec3<f32>(0.0, 0.0, 0.0);
+
+//     // Determine UV coordinates and axis normal based on the axis
+//     if axis == 0 { // X axis
+//         uv = vec2<f32>(ny, nz);
+//         axisNormal = vec3<f32>(1.0, 0.0, 0.0);
+//     } else if axis == 1 { // Y axis
+//         uv = vec2<f32>(nx, nz);
+//         axisNormal = vec3<f32>(0.0, 1.0, 0.0);
+//     } else if axis == 2 { // Z axis
+//         uv = vec2<f32>(nx, ny);
+//         axisNormal = vec3<f32>(0.0, 0.0, 1.0);
+//     }
+
+//     // Raymarching parameters
+//     let maxSteps = 5;
+//     let epsilon = 1e-3;
+
+//     // Raymarch to find the correct depth
+//     var t = 0.0;
+//     for (var i = 0; i < maxSteps; i++) {
+//         let samplePoint = point + t * rayDir;
+//         var uvSample = vec2<f32>(0.0, 0.0);
+
+//         if axis == 0 { // X axis
+//             uvSample = vec2<f32>((samplePoint.y - bboxMin.y) / size, (samplePoint.z - bboxMin.z) / size);
+//         } else if axis == 1 { // Y axis
+//             uvSample = vec2<f32>((samplePoint.x - bboxMin.x) / size, (samplePoint.z - bboxMin.z) / size);
+//         } else if axis == 2 { // Z axis
+//             uvSample = vec2<f32>((samplePoint.x - bboxMin.x) / size, (samplePoint.y - bboxMin.y) / size);
+//         }
+
+//         let depth = textureSample(depthMap, sampler, uvSample).r;
+//         let depthWorld = depth * size;
+
+//         if axis == 0 {
+//             worldDepth = bboxMin.x + depthWorld;
+//         } else if axis == 1 {
+//             worldDepth = bboxMin.y + depthWorld;
+//         } else if axis == 2 {
+//             worldDepth = bboxMin.z + depthWorld;
+//         }
+
+//         if abs(dot(samplePoint, axisNormal) - worldDepth) < epsilon {
+//             break;
+//         }
+
+//         t += epsilon;
+//     }
+
+//     // Calculate the SDF of the box
+//     let d = max(abs(point) - halfSize, vec3<f32>(0.0));
+//     let cubeSDF = length(d);
+
+//     // Calculate the distance from the point to the plane along the given axis
+//     var planeDist = 0.0;
+//     if axis == 0 { // X axis
+//         planeDist = point.x - worldDepth;
+//     } else if axis == 1 { // Y axis
+//         planeDist = point.y - worldDepth;
+//     } else if axis == 2 { // Z axis
+//         planeDist = point.z - worldDepth;
+//     }
+
+//     // Combine the cube's SDF with the plane's depth information
+//     let ablatedSDF = max(cubeSDF, -planeDist);
+
+//     return ablatedSDF;
+// }
+
+fn sdAblatePlane(point: vec3<f32>, size: f32, depthMap: texture_2d<f32>, sampler: sampler, axis: i32) -> f32 {
+    // Calculate bounding box min and max
+    let halfSize = size / 2.0;
+    let bboxMin = vec3<f32>(-halfSize, -halfSize, -halfSize);
+    let bboxMax = vec3<f32>(halfSize, halfSize, halfSize);
+
+    // Normalize the point coordinates to [0, 1] based on bounding box dimensions
+    let nx = (point.x - bboxMin.x) / size;
+    let ny = (point.y - bboxMin.y) / size;
+    let nz = (point.z - bboxMin.z) / size;
+
+    // Calculate UV coordinates for the depth map
+    var uv = vec2<f32>(0.0, 0.0);
+    var worldDepth = 0.0;
+
+    // Determine UV coordinates and world depth based on the axis
+    if axis == 0 { // X axis
+        uv = vec2<f32>(ny, nz);
+        let depth = textureSample(depthMap, sampler, uv).r;
+        worldDepth = bboxMin.x + depth * size;
+    } else if axis == 1 { // Y axis
+        uv = vec2<f32>(nx, nz);
+        let depth = textureSample(depthMap, sampler, uv).r;
+        worldDepth = bboxMin.y + depth * size;
+    } else if axis == 2 { // Z axis
+        uv = vec2<f32>(nx, ny);
+        let depth = textureSample(depthMap, sampler, uv).r;
+        worldDepth = bboxMin.z + depth * size;
     }
-    return d;
+
+    // Calculate the distance from the point to the plane along the given axis
+    var planeDist = 0.0;
+    if axis == 0 { // X axis
+        planeDist = point.x - worldDepth;
+    } else if axis == 1 { // Y axis
+        planeDist = point.y - worldDepth;
+    } else if axis == 2 { // Z axis
+        planeDist = point.z - worldDepth;
+    }
+
+    return planeDist;
 }
+
+fn sdCombineDepthMaps(
+    point: vec3<f32>,
+    size: f32,
+    depthMapXPos: texture_2d<f32>, samplerXPos: sampler,
+    depthMapXNeg: texture_2d<f32>, samplerXNeg: sampler,
+    depthMapYPos: texture_2d<f32>, samplerYPos: sampler,
+    depthMapYNeg: texture_2d<f32>, samplerYNeg: sampler,
+    depthMapZPos: texture_2d<f32>, samplerZPos: sampler,
+    depthMapZNeg: texture_2d<f32>, samplerZNeg: sampler
+) -> f32 {
+    // Sample all six depth maps
+    let sdfXPos = sdAblatePlane(point, size, depthMapXPos, samplerXPos, 0); // X+
+    let sdfXNeg = sdAblatePlane(point, size, depthMapXNeg, samplerXNeg, 0); // X-
+    let sdfYPos = sdAblatePlane(point, size, depthMapYPos, samplerYPos, 1); // Y+
+    let sdfYNeg = sdAblatePlane(point, size, depthMapYNeg, samplerYNeg, 1); // Y-
+    let sdfZPos = sdAblatePlane(point, size, depthMapZPos, samplerZPos, 2); // Z+
+    let sdfZNeg = sdAblatePlane(point, size, depthMapZNeg, samplerZNeg, 2); // Z-
+
+    // Combine the SDF values from all directions
+    let sdf = min(min(sdfXPos, sdfXNeg), min(min(sdfYPos, sdfYNeg), min(sdfZPos, sdfZNeg)));
+
+    // Calculate the SDF of the box without ablation
+    let halfSize = size / 2.0;
+    let d = max(abs(point) - halfSize, vec3<f32>(0.0));
+    let boxSDF = length(d);
+
+    // Combine the box SDF with the ablated SDF
+    let finalSDF = min(boxSDF, sdf);
+
+    return finalSDF;
+}
+
+
+
+
+
+
+// Compute the approximate signed distance to a Bézier curve
+fn sdfBezierApprox(p: vec3<f32>, p0: vec3<f32>, p1: vec3<f32>, p2: vec3<f32>, p3: vec3<f32>, radius: f32) -> f32 {
+	const K: i32 = 10; // Number of samples (adjust for accuracy vs. performance)
+    var minDist: f32 = 1e10;
+    var prevPoint = p0;
+
+    for (var i: i32 = 1; i <= K; i = i + 1) {
+        let t = f32(i) / f32(K);
+        let currPoint = bezier3(p0, p1, p2, p3, t);
+        
+        let dist = sdCapsule(p, prevPoint, currPoint, radius);
+        minDist = min(minDist, dist);
+        
+        prevPoint = currPoint;
+    }
+
+    return minDist;
+}
+
 
 
 
@@ -1873,98 +1266,25 @@ const lightColors = array<vec3f, numLights>(
 
 
 
+// Shadow map
+// @fragment
+// fn fragmentMain(@builtin(position) pos: vec4<f32>) -> @location(0) vec4f {
+//     let uv = (vec2(pos.x, pos.y) / uniforms.resolution - 0.5) * 2.0;
 
-@fragment
-fn fragmentMain(@builtin(position) pos: vec4<f32>) -> @location(0) vec4f {
-    let uv = (vec2(pos.x, pos.y) / C.resolution - 0.5) * 2.0; // Normalize screen coordinates
+//     let ro = uniforms.upos;
+//     let rt = vec3f(0.0, 0.0, 0.0);
+//     let up = vec3f(0.0, 1.0, 0.0);
+//     let fovRadians = radians(50.0 * uniforms.zoom);
+//     let aspectRatio = uniforms.resolution.x / uniforms.resolution.y;
 
-    // Camera and ray setup
-    let ro = C.upos;  // Camera position updated from uniforms
-    let rt = vec3f(0.0, 0.0, 0.0); // World origin as the target position
-    let up = vec3f(0.0, 1.0, 0.0); // World up vector
-    let fovRadians = radians(50.0 * C.zoom); // Field of view adjusted by C.zoom
-    let aspectRatio = C.resolution.x / C.resolution.y;
+//     let rd = rayDirection(uv, ro, rt, up, uniforms.urot.y, uniforms.urot.x, fovRadians, aspectRatio);
+//     let d = rayMarch(ro, rd);
 
-    // Calculate ray direction and perform ray marching
-    let rd = rayDirection(uv, ro, rt, up, C.urot.y, C.urot.x, fovRadians, aspectRatio);
-    let d = rayMarch(ro, rd);
-    // return vec4(vec3f(d / C.MAX_DIST), 1.0);
-    // Background gradient computation
-    var v = length(uv) * 0.75;
-   
-	let p = ro + rd * d;
+//     // Output the depth value as the fragment color
+//     let depth = d / uniforms.FAR_CLIP;
+//     return vec4f(vec3f(depth), 1.0);
+// }
 
-
-	let skyGradient = mix(vec4f(0.0, 0.3, 0.8, 1.0), vec4f(0.6, 0.8, 1.0, 1.0),  p.y / 1000);
-	let depthColor = select(mix(vec4f(0.0, 0.3, .8, 1.0), vec4f(0.0, 0.0, 0.0, 0.0), clamp(p.y / C.MAX_DEPTH, 0.0,1.0)),skyGradient, p.y < -C.SEA_LEVEL); // Pure blue at maximum distance
- 	var fragColor = skyGradient;
-    if (d <= C.MAX_DIST) {
-        
-        let N = getNormal(p);
-        let V = -rd;
-
-        // PBR shading parameters
-        // Calculate noise generation direction based on the surface normal and a slight angle off of vertical
-// Calculate noise generation direction based on the surface normal and a slight angle off of vertical
-// Define noise coordinates based on the position p and a scaling factor
-// Inside the if (d <= C.MAX_DIST) block
-// Lighting calculations
-        let ambientIntensity = 0.001;  // Increased ambient intensity
-        let ambientColor = vec3f(0.2, 0.2, 0.2);  // Adjust color if needed
-// Calculate noise generation direction based on the surface normal and a slight angle off of vertical
-let noiseAngle = radians(15.0); // Adjust the angle as desired
-let noiseDirection = normalize(vec3f(sin(noiseAngle), 0.0, cos(noiseAngle))); // Rotate around y-axis
-let noiseCoord = vec3f(p.x, p.y, p.z) / 70.0; // Adjust the scaling factor as needed
-
-// Adjust noise coordinates based on surface normal
-let rotatedCoord = rotateVector(noiseCoord, N, noiseAngle) * 12;
-let noiseValue = (snoise3(rotatedCoord + vec3f(0.0, 0.0, C.time * 2.0)) + 1.0) / 2.0; // Generate noise
-
-// Compute the influence of the noise based on the dot product between surface normal and noise direction
-let noiseInfluence = max(dot(N, -noiseDirection) * 5, 0.0);
-
-// Modify the light contribution based on noise value and its influence
-let causticMultiplier = 1.0 + noiseValue * noiseInfluence; // Adjust the multiplier as needed
-
-
-        var albedo = mix(vec3f(1.0), vec3f(0.0, 0.1, 0.07), clamp(customNoise3D(p, 6.0, 0.1, C.OCTAVES, 0.0001 ) * 0.5,0.0, 0.15));
-		albedo = mix(albedo, vec3f(0.0, 0.15, 0.05), clamp(customNoise3D(p, 6.0, 0.3, C.OCTAVES, C.NOISE_OFFSET) * 0.5,0.0, 0.3));
-		albedo = mix(albedo, vec3f(0.0, 0.1, 0.03), clamp(customNoise3D(p, 6.0, 0.01, C.OCTAVES, C.NOISE_OFFSET) * 0.5,0.0, 0.8));
-		albedo = mix(albedo, vec3f(0.0, 0.1, 0.03), clamp(p.y / C.MAX_DEPTH, 0.0,1.0));
-        let roughness = 0.8;
-        let metallic = 0.0;
-        var F0 = vec3(0.04);
-        F0 = mix(F0, albedo, metallic);
-
-        // Lighting calculation
-        var Lo = vec3f(0.0);
-        for (var i: i32 = 0; i < numLights; i++) {
-            let lightPos = lights[i] + C.upos;
-            let L = normalize(lightPos - p);
-            let H = normalize(V + L);
-            let radiance = lightColors[i] * (1.0 / (length(lightPos - p) * length(lightPos - p)));
-            let NDF = DistributionGGX(N, H, roughness);
-            let G = GeometrySmith(N, V, L, roughness);
-            let F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-            let specular = NDF * G * F / (4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001);
-            Lo += (vec3f(1.0) - F + specular) * radiance * max(dot(N, L), 0.0) * baseLightPower * lightPowers[i] * causticMultiplier;
-        }
-
-        let ambient = ambientColor * ambientIntensity;  // Apply ambient light
-        var color = (ambient + Lo) * albedo;  // Combine lighting contributions
-        color = color / (color + vec3f(1.0));  // Tone mapping
-        color = pow(color, vec3f(1.0/2.2));  // Gamma correction
-        fragColor = vec4(color, 1.0);
-
-        // Modify the output color based on distance to make distant objects bluer
-       
-        let blueFactor = d / C.MAX_DIST; // Normalize distance to range [0, 1]
-        fragColor = mix(fragColor, depthColor, blueFactor + min(causticMultiplier, 0.1)); // Blwwwwend original color with blue based on distance
-		
-    }
-
-    return fragColor;
-}
 
 // Function to rotate a vector around an axis
 fn rotateVector(v: vec3f, axis: vec3f, angle: f32) -> vec3f {
@@ -1993,19 +1313,372 @@ fn rotateVector(v: vec3f, axis: vec3f, angle: f32) -> vec3f {
     );
 }
 
+
+// COORDINATE SYSTEM: X = [-1,+1] (Right pos) | Y = [-1,+1] (Down pos.)  
+
+////////////////////////////////////////////////////////////////
+// Ray Marching Functions
+////////////////////////////////////////////////////////////////
+
+fn rayDirection(p: vec2f, ro: vec3f, yaw: f32, pitch: f32, fov: f32, aspectRatio: f32) -> vec3f {
+    let cosPitch = cos(pitch);
+    let sinPitch = sin(pitch);
+    let cosYaw = cos(yaw);
+    let sinYaw = sin(yaw);
+
+    // Forward direction vector based on yaw and pitch (Euler angles)
+    let forward = vec3f(cosPitch * sinYaw, sinPitch, cosPitch * cosYaw);
+
+    // Right vector perpendicular to 'forward' and 'up'
+    let right = vec3f(cosYaw, 0.0, -sinYaw);
+
+    // Adjust 'up' vector to be perpendicular to 'forward' and 'right'
+    let adjustedUp = vec3f(-sinPitch * sinYaw, cosPitch, -sinPitch * cosYaw);
+
+    // Calculate normalized device coordinates (NDC) offset for field of view
+    let fovTan = tan(fov / 2.0);
+    let ndcX = p.x * fovTan * aspectRatio;
+    let ndcY = p.y * fovTan;
+
+    // Calculate the final ray direction
+    return normalize(forward + ndcX * right + ndcY * adjustedUp);
+}
+
+
+
+fn rayMarch(ro: vec3f, rd: vec3f, uv: vec2f, polyworld_depth: f32) -> f32 {
+	let frustrum_depth = uniforms.FAR_CLIP - uniforms.NEAR_CLIP;
+    var d = uniforms.NEAR_CLIP;
+	var has_point_light: bool = true;
+    var i: i32 = 0;
+    loop {
+        if i >= uniforms.MAX_STEPS { break; }
+        let p = ro + rd * d;
+        // perturbations / global light domain warping  = natural looking caves
+        // let perturbedP = p * customNoise3D(p * 0.001, 6.0, 0.1, uniforms.OCTAVES, uniforms.NOISE_OFFSET) * 1; // Adjust scale and strength as needed
+        // let ds = getDist(perturbedP);
+        
+        let ds = getDist(p, ro, rd, uv);
+        d += ds;
+        
+        // Calculate the dynamic SURF_DIST based on the distance d // uniforms.ADAPTIVE_SURF_DIST
+        let dynamic_surf_dist = uniforms.SURF_DIST * d * 2;
+
+        if d >= uniforms.FAR_CLIP || ds < dynamic_surf_dist { break; }
+		let normalized_depth = (d - uniforms.NEAR_CLIP) / frustrum_depth;
+		if (polyworld_depth < normalized_depth){
+			return -100.;
+		}
+        i++;
+    }
+    return d;
+}
+
+
+
+fn mm2(a: f32) -> mat2x2<f32> {
+    let c = cos(a);
+    let s = sin(a);
+    return mat2x2<f32>(c, s, -s, c);
+}
+
+fn tri(x: f32) -> f32 {
+    return clamp(abs(fract(x) - 0.5), 0.01, 0.49);
+}
+
+fn tri2(p: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(tri(p.x) + tri(p.y), tri(p.y + tri(p.x)));
+}
+
+fn triNoise2d(p: vec2<f32>, spd: f32) -> f32 {
+    var z = 0.8;
+    var z2 = 10.5;
+    var rz = 0.0;
+    var bp = p;
+    var pLocal = p;
+    let time = uniforms.time;  // Assuming there's a uniform variable for time
+    pLocal = mm2(pLocal.x * 0.06) * pLocal;
+    for (var i = 0.0; i < 5.0; i = i + 1.0) {
+        var dg = tri2(bp * 1.85) * 0.75;
+        dg = mm2(time * spd) * dg;
+        pLocal -= dg / z2;
+
+        bp *= 1.3;
+        z2 *= 0.45;
+        z *= 0.42;
+        pLocal *= 1.21 + (rz - 1.0) * 0.02;
+        
+        rz += tri(pLocal.x + tri(pLocal.y)) * z;
+        pLocal = mm2(-1.5708) * -pLocal;  // Using 90 degrees rotation matrix
+    }
+    return clamp(1.0 / pow(rz * 29.0, 1.3), 0.0, 0.55);
+}
+
+
+fn hash21(n: vec2<f32>) -> f32 {
+    return fract(sin(dot(n, vec2<f32>(12.9898, 4.1414))) * 43758.5453);
+}
+
+fn nmzHash33(q: vec3<f32>) -> vec3<f32> {
+    var p = vec3<u32>(u32(i32(q.x)), u32(i32(q.y)), u32(i32(q.z)));
+    p = p * vec3<u32>(374761393u, 1103515245u, 668265263u) + p.zxy + p.yzx;
+    p = p.yzx * (p.zxy ^ (p >> vec3<u32>(3u, 3u, 3u)));
+    let result = p ^ (p >> vec3<u32>(16u, 16u, 16u));
+    return vec3<f32>(f32(result.x), f32(result.y), f32(result.z)) * (1.0 / vec3<f32>(4294967295.0, 4294967295.0, 4294967295.0));
+}
+
+
+
+
+
+fn aurora(ro: vec3<f32>, rd: vec3<f32>) -> vec4<f32> {
+    var col = vec4<f32>(0.0);
+    var avgCol = vec4<f32>(0.0);
+    for (var i = 0.0; i < 50.0; i = i + 1.0) {
+        let oof = 0.006 * hash21(vec2<f32>(f32(u32(i32(ro.x))), f32(u32(i32(ro.y))))) * smoothstep(0.0, 15.0, i);
+        var pt = ((0.8 + pow(i, 1.4) * 0.002) - ro.y) / (rd.y * 2.0 + 0.4);
+        pt -= oof;
+        let bpos = ro + pt * rd;
+        let p = bpos.zx;
+        let rzt = triNoise2d(p, 0.06);
+        let new_rgb = (sin(1.0 - vec3<f32>(2.15, -0.5, 1.2) + i * 0.043) * 0.5 + 0.5) * rzt;
+        var col2 = vec4<f32>(new_rgb, rzt);
+        avgCol = mix(avgCol, col2, 0.5);
+        col += avgCol * exp2(-i * 0.065 - 2.5) * smoothstep(0.0, 5.0, i);
+    }
+    col *= clamp(rd.y * 15.0 + 0.4, 0.0, 1.0);
+    return col * 1.8;
+}
+
+
+
+
+fn stars(p: vec3<f32>) -> vec3<f32> {
+	 var pLocal = p;
+    var c = vec3<f32>(0.0);
+    let res = uniforms.resolution.x*1.;
+    for (var i = 0.0; i < 4.0; i = i + 1.0) {
+        let q = fract(pLocal * (0.15 * res)) - 0.5;
+        let id = floor(pLocal * (0.15 * res));
+        let rn = nmzHash33(id).xy;
+        var c2 = 1.0 - smoothstep(0.0, 0.6, length(q));
+        c2 *= step(rn.x, 0.0005 + i * i * 0.001);
+        c += c2 * (mix(vec3<f32>(1.0, 0.49, 0.1), vec3<f32>(0.75, 0.9, 1.0), rn.y) * 0.1 + 0.9);
+        pLocal *= 1.3;
+    }
+    return c * c * 0.8;
+}
+
+fn bg(rd: vec3<f32>) -> vec3<f32> {
+    var sd = dot(normalize(vec3<f32>(-0.5, -0.6, 0.9)), rd) * 0.5 + 0.5;
+    sd = pow(sd, 5.0);
+    let col = mix(vec3<f32>(0.05, 0.1, 0.2), vec3<f32>(0.1, 0.05, 0.2), sd);
+    return col * 0.63;
+}
+
+const aurora_offset: f32 = 3.; // {Octave count:-500-500}
+
+@fragment
+fn main(input: FragmentInputs) -> FragmentOutputs {
+	var coord = fragmentInputs.vUV * uniforms.resolution;
+	let PIXEL_X = u32(floor(coord.x)) ;
+	let PIXEL_Y = u32(floor(coord.y)) ;
+
+	var mouse_coord = uniforms.mouse;
+	let MOUSE_PIXEL_X = u32(floor(mouse_coord.x)) ;
+	let MOUSE_PIXEL_Y = u32(uniforms.resolution.y) - u32(floor(mouse_coord.y)) ;
+	
+
+    let polyworld_color = textureSample(SceneColor, SceneColorSampler, fragmentInputs.vUV);
+	
+    let polyworld_depth = textureSample(SceneDepth, SceneDepthSampler, fragmentInputs.vUV);
+
+	//if (fragmentInputs.vUV.x < 0.5){
+	//fragmentOutputs.color = vec4f(vec3f(fragmentInputs.vUV.x),1.);
+	  //return fragmentOutputs;
+	//}
+	//else {
+	//fragmentOutputs.color = polyworld_color;
+	//return fragmentOutputs;
+	//}
+	
+    let pos = fragmentInputs.position;
+    var color: vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 1.0); // Default to black
+
+    var uv = (vec2(pos.x, pos.y) / uniforms.resolution - 0.5) * 2.0;
+    uv.y = -(uv.y);
+
+    // Camera and ray setup
+    let ro = vec3f(uniforms.upos.x, -uniforms.upos.y, uniforms.upos.z);  // Camera position updated from uniforms
+    let yaw = uniforms.urot.y;  // Camera yaw rotation (around Y-axis)
+    let pitch = uniforms.urot.x;  // Camera pitch rotation (around X-axis)
+    let fovRadians = uniforms.zoom; // Field of view adjusted by uniforms.zoom
+    let aspectRatio = uniforms.resolution.x / uniforms.resolution.y;
+
+    // Calculate ray direction and perform ray marching
+    let rd = rayDirection(uv, ro, yaw, pitch, fovRadians, aspectRatio);
+
+    let d = rayMarch(ro, rd, uv, polyworld_depth.r);
+
+
+
+    // Background fgradient computation
+    var v = length(uv) * 0.75;
+
+    let p = ro + rd * d;
+
+	   fragmentOutputs.fragDepth = d;
+    if (PIXEL_X == MOUSE_PIXEL_X && PIXEL_Y == MOUSE_PIXEL_Y) {
+	GpuState[0] = p.x;
+	GpuState[1] = p.y;
+	GpuState[2] = p.z;
+	fragmentOutputs.color = vec4f(vec3f(1.,0.,0.),1.0);
+	return fragmentOutputs;
+	}
+
+
+    let skyGradient = mix(vec4f(0.0, 0.3, 0.8, 1.0), vec4f(0.6, 0.8, 1.0, 1.0), p.y / 1000);
+    let depthColor = select(mix(vec4f(0.0, 0.3, 0.8, 1.0), vec4f(0.0, 0.0, 0.0, 0.0), clamp(p.y / uniforms.MAX_DEPTH, 0.0, 1.0)), skyGradient, p.y < -uniforms.SEA_LEVEL); // Pure blue at maximum distance
+    // Background and stars integration
+     var col = vec3<f32>(0.0);
+	 var rdAurora = normalize(rd);
+
+    let fade = smoothstep(0.0, 0.01, abs(rdAurora.y)) * 0.1 + 0.9;
+
+    col = bg(rdAurora) * fade;
+	let scaled_ro = ro*0.0005;
+	
+    if (rdAurora.y > 0.0) {
+	 col = depthColor.xyz;
+	let auroraCol = aurora(scaled_ro, rdAurora);
+        let aur = vec4<f32>(
+            smoothstep(0.0, 1.5, auroraCol.x),
+            smoothstep(0.0, 1.5, auroraCol.y),
+            smoothstep(0.0, 1.5, auroraCol.z),
+            smoothstep(0.0, 1.5, auroraCol.w)
+        ) * fade;
+	
+        col += stars(rdAurora);
+        col = col * (1.0 - aur.a) + aur.rgb;
+    } else {
+        rdAurora.y = abs(rdAurora.y);
+        col = bg(rdAurora) * fade * 0.6;
+		let auroraCol = aurora(scaled_ro, rdAurora);
+         let aur = vec4<f32>(
+            smoothstep(0.0, 2.5, auroraCol.x),
+            smoothstep(0.0, 2.5, auroraCol.y),
+            smoothstep(0.0, 2.5, auroraCol.z),
+            smoothstep(0.0, 2.5, auroraCol.w)
+        );
+        col += stars(rdAurora) * 1.1;
+        col = col * (1.0 - aur.a) + aur.rgb;
+        let pos = scaled_ro + ((0.5 - scaled_ro.y) / rdAurora.y) * rdAurora;
+        let nz2 = triNoise2d(pos.xz * vec2<f32>(0.5, 0.7), 0.0);
+        col += mix(vec3<f32>(0.2, 0.25, 0.5) * 0.08, vec3<f32>(0.3, 0.3, 0.5) * 0.7, nz2 * 0.4);
+		
+    }
+	let col4 = vec4f(col, 1.0);
+
+      var  fragColor = col4;
+	
+    
+
+	if (d < -1.0) {
+	
+        fragColor = mix(polyworld_color, depthColor, polyworld_depth.r + 0.1); // Blend original color with blue based on distance
+        fragmentOutputs.fragDepth = polyworld_depth.r;
+ 
+  
+    } else if (d <= uniforms.FAR_CLIP) {
+        let N = getNormal(p, ro, rd, uv);
+        let V = -rd;
+
+			
+		let noiseAngle = radians(15.0); // Adjust the angle as desired
+		let noiseDirection = normalize(vec3f(sin(noiseAngle), 0.0, cos(noiseAngle))); // Rotate around y-axis
+		let noiseCoord = vec3f(p.x, p.y, p.z) / 70.0; // Adjust the scaling factor as needed
+
+		// Adjust noise coordinates based on surface normal
+		let rotatedCoord = rotateVector(noiseCoord, N, noiseAngle) * 12;
+		let noiseValue = (snoise3(rotatedCoord + vec3f(0.0, 0.0, uniforms.time * 2.0)) + 1.0) / 2.0; // Generate noise
+
+        // PBR shading parameters
+        let ambientIntensity = 0.01;  // Increased ambient intensity
+        let ambientColor = vec3f(0.2, 0.2, 0.2);  // Adjust color if needed
+
+      
+        // Compute the influence of the noise based on the dot product between surface normal and noise direction
+        let noiseInfluence = max(dot(N, -noiseDirection) * 5, 0.0);
+
+        // Modify the light contribution based on noise value and its influence
+        let causticMultiplier = 1.0 + noiseValue * noiseInfluence; // Adjust the multiplier as needed
+
+        var material = Material(
+           mix(vec3f(1.0), vec3f(0.0, 0.1, 0.07), clamp(customNoise3D(p, 6.0, 0.1, uniforms.OCTAVES, 0.0001) * 0.5, 0.0, 0.15)),
+            0.8,
+            0.0,
+           vec3(0.04)
+        );
+
+        material.albedo = mix(material.albedo, vec3f(0.0, 0.15, 0.05), clamp(customNoise3D(p, 6.0, 0.3, uniforms.OCTAVES, uniforms.NOISE_OFFSET) * 0.5, 0.0, 0.3));
+        material.albedo = mix(material.albedo, vec3f(0.0, 0.1, 0.03), clamp(customNoise3D(p, 6.0, 0.01, uniforms.OCTAVES, uniforms.NOISE_OFFSET) * 0.5, 0.0, 0.8));
+        material.albedo = mix(material.albedo, vec3f(0.0, 0.1, 0.03), clamp(p.y / uniforms.MAX_DEPTH, 0.0, 1.0));
+        material.F0 = mix(material.F0, material.albedo, material.metallic);
+
+
+        // Lighting calculation
+        var Lo = vec3f(0.0);
+        for (var i: i32 = 0; i < numLights; i++) {
+            let light = PointLight(
+                lights[i] + uniforms.upos,
+                lightColors[i],
+                baseLightPower * lightPowers[i]
+            );
+
+            let L = normalize(light.position - p);
+            let H = normalize(V + L);
+            let radiance = light.color * (1.0 / (length(light.position - p) * length(light.position - p)));
+            let NDF = DistributionGGX(N, H, material.roughness);
+            let G = GeometrySmith(N, V, L, material.roughness);
+            let F = fresnelSchlick(max(dot(H, V), 0.0), material.F0);
+            let specular = NDF * G * F / (4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001);
+            Lo += (vec3f(1.0) - F + specular) * radiance * max(dot(N, L), 0.0) * light.power * causticMultiplier;
+        }
+
+        let ambient = ambientColor * ambientIntensity;  // Apply ambient light
+        var color = (ambient + Lo) * material.albedo;  // Combine lighting contributions
+        color = color / (color + vec3f(1.0));  // Tone mapping
+        color = pow(color, vec3f(1.0 / 2.2));  // Gamma correction
+        let color4 = vec4(color, 1.0);
+
+		
+        // Modify the output color based on distance to make distant objects bluer
+        let blueFactor = d / uniforms.FAR_CLIP; // Normalize distance to range [0, 1]
+        fragColor = mix(color4, depthColor, blueFactor + min(causticMultiplier, 0.1)); // Blend original color with blue based on distance
+
+		let distToDetonateTarget = sdSphere(p, vec3f(GpuState[0], GpuState[1], GpuState[2]), uniforms.raycast_detonate_volume[3]);
+		if (distToDetonateTarget < 0.) {
+			fragColor = mix(color4, vec4f(1.,0.,0.,1.), 0.3);
+		}
+    } else {
+		
+	}
+
+    fragmentOutputs.color = fragColor;
+}
 // @fragment
 // fn fragmentMain(@builtin(position) pos: vec4<f32>) -> @location(0) vec4f {
-//     let uv = (vec2(pos.x, pos.y) / C.resolution - 0.5) * 2.0; // Normalize screen coordinates
+//     let uv = (vec2(pos.x, pos.y) / uniforms.resolution - 0.5) * 2.0; // Normalize screen coordinates
 
 //     // Camera and ray setup
-//     let ro = C.upos;  // Camera position updated from uniforms
+//     let ro = uniforms.upos;  // Camera position updated from uniforms
 //     let rt = vec3f(0.0, 0.0, 0.0); // World origin as the target position
 //     let up = vec3f(0.0, 1.0, 0.0); // World up vector
-//     let fovRadians = radians(50.0 * C.zoom); // Field of view adjusted by C.zoom
-//     let aspectRatio = C.resolution.x / C.resolution.y;
+//     let fovRadians = radians(50.0 * uniforms.zoom); // Field of view adjusted by uniforms.zoom
+//     let aspectRatio = uniforms.resolution.x / uniforms.resolution.y;
 
 //     // Calculate ray direction and perform ray marching
-//     let rd = rayDirection(uv, ro, rt, up, C.urot.y, C.urot.x, fovRadians, aspectRatio);
+//     let rd = rayDirection(uv, ro, rt, up, uniforms.urot.y, uniforms.urot.x, fovRadians, aspectRatio);
 //     let d = rayMarch(ro, rd);
 
 //     // Background gradient computation

@@ -16,6 +16,8 @@ fn vertexMain(input: VertexInput) ->
     return output;
 }
 
+
+
 fn gridLines(uv: vec2f, width: f32, spacing: f32) -> f32 {
     let gS = 0.2;
     let lines = mix(0.75, 1.0, min(step(width, fract(uv.x/spacing + width / 2.0)), step(width, fract(uv.y/spacing + width / 2.0))));

@@ -9,9 +9,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@babylonjs/core": "^7.11.1",
+    "@babylonjs/materials": "^7.11.1",
     "@cyrilf/vue-dat-gui": "^1.0.13",
+    "@std/collections": "npm:@jsr/std__collections@^1.0.5",
+    "babylonjs": "^7.9.0",
     "joypad.js": "^2.3.5",
-    "vue": "^3.4.21",
+    "vue": "^3.4.37",
     "webgpu-utils": "^1.7.0"
   },
   "devDependencies": {
